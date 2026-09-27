@@ -1,0 +1,58 @@
+version: "3.9"
+
+# Local/dev compose file. For production: supply real secrets via your
+# deployment's secret manager (not this file or a committed .env), restrict
+# CORS_ORIGINS to the real frontend origin, and build the frontend with the
+# real API URL baked in (NEXT_PUBLIC_API_URL is a Next.js *build-time* value —
+# see frontend/README notes). This file still uses pm_user/pm_password
+# defaults for convenience; override POSTGRES_PASSWORD (and DATABASE_URL to
+# match) via a .env file or CI secret injection for anything beyond a laptop.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pm_password}
+      POSTGRES_DB: ${POSTGRES_DB:-pm_system}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pm_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pm_user} -d ${POSTGRES_DB:-pm_system}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pm_user}:${POSTGRES_PASSWORD:-pm_password}@db:5432/${POSTGRES_DB:-pm_system}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      ATTACHMENT_DIR: /data/pm_attachments
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - pm_attachments:/data/pm_attachments
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  pm_db_data:
+  pm_attachments:
