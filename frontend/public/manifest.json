@@ -1,0 +1,15 @@
+{
+  "name": "PM Automation — Technician",
+  "short_name": "PM Technician",
+  "description": "Preventive maintenance tasks and work orders for shop-floor technicians.",
+  "start_url": "/technician",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f5f7",
+  "theme_color": "#1a1d21",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
