@@ -28,19 +28,19 @@ def upgrade() -> None:
     work_order_status.create(bind, checkfirst=True)
     work_order_priority.create(bind, checkfirst=True)
 
-    op.create_table(
+        op.create_table(
         "work_orders",
-        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
+        sa.Column("id", sa.String(), primary_key=True),
         sa.Column("number", sa.Integer(), nullable=False),
-        sa.Column("machine_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("machines.id"), nullable=False),
-        sa.Column("breakdown_event_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("breakdown_events.id"), nullable=True),
-        sa.Column("pm_plan_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("pm_plans.id"), nullable=True),
+        sa.Column("machine_id", sa.String(), sa.ForeignKey("machines.id"), nullable=False),
+        sa.Column("breakdown_event_id", sa.String(), sa.ForeignKey("breakdown_events.id"), nullable=True),
+        sa.Column("pm_plan_id", sa.String(), sa.ForeignKey("pm_plans.id"), nullable=True),
         sa.Column("title", sa.String(255), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("priority", work_order_priority, nullable=True),
         sa.Column("status", work_order_status, nullable=True),
-        sa.Column("reported_by", postgresql.UUID(as_uuid=False), sa.ForeignKey("employees.id"), nullable=True),
-        sa.Column("assigned_to", postgresql.UUID(as_uuid=False), sa.ForeignKey("employees.id"), nullable=True),
+        sa.Column("reported_by", sa.String(), sa.ForeignKey("employees.id"), nullable=True),
+        sa.Column("assigned_to", sa.String(), sa.ForeignKey("employees.id"), nullable=True),
         sa.Column("due_date", sa.Date(), nullable=True),
         sa.Column("root_cause", sa.Text(), nullable=True),
         sa.Column("action_taken", sa.Text(), nullable=True),
@@ -48,7 +48,7 @@ def upgrade() -> None:
         sa.Column("labor_hours", sa.Integer(), nullable=True),
         sa.Column("downtime_minutes", sa.Integer(), nullable=True),
         sa.Column("closed_at", sa.DateTime(), nullable=True),
-        sa.Column("verified_by", postgresql.UUID(as_uuid=False), sa.ForeignKey("employees.id"), nullable=True),
+        sa.Column("verified_by", sa.String(), sa.ForeignKey("employees.id"), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
     )
