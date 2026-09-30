@@ -28,7 +28,7 @@ def upgrade() -> None:
     work_order_status.create(bind, checkfirst=True)
     work_order_priority.create(bind, checkfirst=True)
 
-        op.create_table(
+    op.create_table(
         "work_orders",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("number", sa.Integer(), nullable=False),
