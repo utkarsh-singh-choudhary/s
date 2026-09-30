@@ -26,17 +26,17 @@ depends_on = None
 # uses the enum class's __name__.lower() by default via native_enum).
 pm_status = postgresql.ENUM(
     "PLANNED", "REMINDER_SENT", "DUE", "IN_PROGRESS", "COMPLETED",
-    "OVERDUE", "MISSED", "CANCELLED", "PENDING_SUPERVISOR_CONFIRMATION", name="pmstatus",
+    "OVERDUE", "MISSED", "CANCELLED", "PENDING_SUPERVISOR_CONFIRMATION", name="pmstatus", create_type=False,
 )
-plan_source_type = postgresql.ENUM("EXACT_DATE", "WEEK_CODE", "DAY_OF_MONTH", name="plansourcetype")
-completion_class = postgresql.ENUM("EARLY", "ON_TIME", "LATE", name="completionclass")
+plan_source_type = postgresql.ENUM("EXACT_DATE", "WEEK_CODE", "DAY_OF_MONTH", name="plansourcetype", create_type=False)
+completion_class = postgresql.ENUM("EARLY", "ON_TIME", "LATE", name="completionclass", create_type=False)
 notification_type = postgresql.ENUM(
     "UPCOMING_REMINDER", "DUE_REMINDER", "OVERDUE_REMINDER", "ESCALATION", "MONTHLY_REPORT",
-    name="notificationtype",
+    name="notificationtype", create_type=False,
 )
-notification_channel = postgresql.ENUM("EMAIL", "WHATSAPP", "SMS", name="notificationchannel")
-delivery_status = postgresql.ENUM("PENDING", "SENT", "FAILED", "RETRYING", name="deliverystatus")
-role_enum = postgresql.ENUM("ADMIN", "MANAGER", "SUPERVISOR", "TECHNICIAN", "VIEWER", name="role")
+notification_channel = postgresql.ENUM("EMAIL", "WHATSAPP", "SMS", name="notificationchannel", create_type=False)
+delivery_status = postgresql.ENUM("PENDING", "SENT", "FAILED", "RETRYING", name="deliverystatus", create_type=False)
+role_enum = postgresql.ENUM("ADMIN", "MANAGER", "SUPERVISOR", "TECHNICIAN", "VIEWER", name="role", create_type=False)
 
 
 def upgrade() -> None:
