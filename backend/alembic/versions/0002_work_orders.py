@@ -19,10 +19,9 @@ depends_on = None
 
 work_order_status = postgresql.ENUM(
     "OPEN", "ASSIGNED", "IN_PROGRESS", "WAITING_PARTS", "WAITING_APPROVAL",
-    "COMPLETED", "VERIFIED", "CLOSED", name="workorderstatus",
+    "COMPLETED", "VERIFIED", "CLOSED", name="workorderstatus", create_type=False,
 )
-work_order_priority = postgresql.ENUM("LOW", "MEDIUM", "HIGH", "CRITICAL", name="workorderpriority")
-
+work_order_priority = postgresql.ENUM("LOW", "MEDIUM", "HIGH", "CRITICAL", name="workorderpriority", create_type=False)
 
 def upgrade() -> None:
     bind = op.get_bind()
