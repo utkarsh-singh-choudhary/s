@@ -43,10 +43,10 @@ def upgrade() -> None:
         "spare_part_transactions",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
         sa.Column("spare_part_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("spare_parts.id"), nullable=False),
-        sa.Column("work_order_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("work_orders.id"), nullable=True),
+                sa.Column("work_order_id", sa.String(), sa.ForeignKey("work_orders.id"), nullable=True),
         sa.Column("change", sa.Integer(), nullable=False),
         sa.Column("reason", sa.String(255), nullable=True),
-        sa.Column("performed_by", postgresql.UUID(as_uuid=False), sa.ForeignKey("employees.id"), nullable=True),
+        sa.Column("performed_by", sa.String(), sa.ForeignKey("employees.id"), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=True),
     )
     op.create_index("ix_sparepart_txn_part", "spare_part_transactions", ["spare_part_id"])
