@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-
+import { getToken } from "../../lib/auth";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 type UploadResult = { file_path: string; original_filename: string };
@@ -38,7 +38,7 @@ export default function ImportWizard() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(`${API_URL}/api/import/excel/upload`, { method: "POST", body: form });
+      const res = await fetch(`${API_URL}/api/import/excel/upload`, { method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, body: form });
       if (!res.ok) throw new Error("Upload failed");
       const data: UploadResult = await res.json();
       setUploaded(data);
@@ -60,7 +60,7 @@ export default function ImportWizard() {
       form.append("original_filename", uploaded.original_filename);
       form.append("sheet_name", sheetName);
       form.append("financial_year", financialYear);
-      const res = await fetch(`${API_URL}/api/import/excel/preview`, { method: "POST", body: form });
+      const res = await fetch(`${API_URL}/api/import/excel/preview`, { method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, body: form });
       if (!res.ok) throw new Error("Preview failed");
       const data: PreviewResult = await res.json();
       setPreview(data);
@@ -82,7 +82,7 @@ export default function ImportWizard() {
       form.append("original_filename", uploaded.original_filename);
       form.append("sheet_name", sheetName);
       form.append("financial_year", financialYear);
-      const res = await fetch(`${API_URL}/api/import/excel/commit`, { method: "POST", body: form });
+      const res = await fetch(`${API_URL}/api/import/excel/commit`, { method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, body: form });
       if (!res.ok) throw new Error("Import failed");
       const data: PreviewResult = await res.json();
       setCommitted(data);
