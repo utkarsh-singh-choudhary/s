@@ -203,13 +203,19 @@ export type DataQualityReport = {
   potential_duplicate_machines: any[];
 };
 
-function authHeaders(): Record<string, string> {
+async function authHeaders(): Promise<Record<string, string>> {
+  if (typeof window === "undefined") {
+    const { cookies } = await import("next/headers");
+    const cookieStore = await cookies();
+    const token = cookieStore.get("pm_token")?.value;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: { ...authHeaders() } });
+  const res = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: { ...(await authHeaders()) } });
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
   return res.json();
 }
@@ -217,7 +223,7 @@ async function apiGet<T>(path: string): Promise<T> {
 async function apiPut<T>(path: string, body: any): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
@@ -227,7 +233,7 @@ async function apiPut<T>(path: string, body: any): Promise<T> {
 async function apiPost<T>(path: string, body: any): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
