@@ -284,7 +284,7 @@ export const api = {
     if (payload.cause) qs.set("cause", payload.cause);
     const res = await fetch(`${API_URL}/api/breakdowns?${qs.toString()}`, {
       method: "POST",
-      headers:  headers: { ...(await authHeaders()) },
+      headers: { ...(await authHeaders()) },
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => null);
@@ -298,7 +298,7 @@ export const api = {
     if (payload.resulted_in_scrap_or_replace != null) qs.set("resulted_in_scrap_or_replace", String(payload.resulted_in_scrap_or_replace));
     const res = await fetch(`${API_URL}/api/breakdowns/${eventId}/resolve?${qs.toString()}`, {
       method: "POST",
-      headers:  headers: { ...(await authHeaders()) },
+      headers: { ...(await authHeaders()) },
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => null);
@@ -397,7 +397,7 @@ export const api = {
 
     const res = await fetch(`${API_URL}/api/pm/${pmId}/complete`, {
       method: "POST",
-      headers:  headers: { ...(await authHeaders()) },
+      headers: { ...(await authHeaders()) },
       body: form,
     });
     if (!res.ok) {
