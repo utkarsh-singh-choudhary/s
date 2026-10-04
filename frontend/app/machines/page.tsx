@@ -3,13 +3,19 @@ import MachinesClient from "./MachinesClient";
 
 export const dynamic = "force-dynamic";
 
-export default async function MachinesPage() {
-  let machines: Awaited<ReturnType<typeof api.machines>> = [];
+async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   try {
-    machines = await api.machines();
+    return await fn();
   } catch {
-    machines = [];
+    return fallback;
   }
+}
 
-  return <MachinesClient machines={machines} />;
+export default async function MachinesPage() {
+  const [machines, checklists] = await Promise.all([
+    safe(() => api.machines(false), []), // all machines (active + archived); client filters by default
+    safe(() => api.checklists(), []),
+  ]);
+
+  return <MachinesClient machines={machines} checklists={checklists} />;
 }
