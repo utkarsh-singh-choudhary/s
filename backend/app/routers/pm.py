@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -27,6 +28,66 @@ ATTACHMENT_DIR = settings.ATTACHMENT_DIR
 os.makedirs(ATTACHMENT_DIR, exist_ok=True)
 ALLOWED_ATTACHMENT_EXT = {".jpg", ".jpeg", ".png", ".pdf", ".heic", ".webp"}
 MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024  # 15 MB
+
+MAX_BULK_COMPLETE = 200
+
+
+def _apply_pm_completion(
+    db: Session,
+    plan: PMPlan,
+    actual: PMActual,
+    actual_date: date,
+    user: Employee,
+    completed_by: str | None = None,
+    remarks: str | None = None,
+    delay_reason: str | None = None,
+    downtime_minutes: int | None = None,
+) -> bool:
+    """
+    Shared completion logic for both the single-plan `/complete` flow and
+    `/bulk-complete`, so business rules (critical-machine sign-off, delay
+    classification) can't drift between the two paths. `actual` must
+    already be attached to the session (created or fetched by the caller);
+    this fills in its fields and updates `plan`'s status, but does NOT
+    commit - the caller controls the transaction boundary.
+
+    Returns True if the plan is now fully COMPLETED, False if it was
+    routed to PENDING_SUPERVISOR_CONFIRMATION instead.
+    """
+    actual.actual_date = actual_date
+    actual.completed_by = completed_by or user.id
+    actual.remarks = remarks
+    actual.delay_reason = delay_reason
+    actual.downtime_minutes = downtime_minutes
+
+    if plan.planned_date:
+        delay = (actual_date - plan.planned_date).days
+        actual.delay_days = delay
+        actual.completion_class = (
+            CompletionClass.ON_TIME if delay <= 0 else CompletionClass.LATE
+        ) if delay >= 0 else CompletionClass.EARLY
+
+    # Critical machines (`*`-flagged) need a second set of eyes: a technician
+    # self-reporting completion only gets the job to PENDING_SUPERVISOR_
+    # CONFIRMATION, not COMPLETED - closes the "self-reported completion"
+    # accuracy gap the customer flagged. A supervisor/manager/admin acting
+    # here (e.g. confirming on a technician's behalf) can complete directly,
+    # since that already is the second set of eyes.
+    machine = db.query(Machine).get(plan.machine_id)
+    requires_sign_off = bool(machine and machine.critical and user.role == Role.TECHNICIAN)
+
+    plan.status = PMStatus.PENDING_SUPERVISOR_CONFIRMATION if requires_sign_off else PMStatus.COMPLETED
+    plan.completed_by_technician_id = user.id
+    if not requires_sign_off:
+        plan.confirmed_by_supervisor_id = user.id
+        plan.confirmed_at = datetime.utcnow()
+
+    return not requires_sign_off
+
+
+class BulkCompleteIn(BaseModel):
+    pm_ids: list[str]
+    actual_date: date | None = None
 
 
 @router.get("", response_model=list[PMPlanOut])
@@ -82,6 +143,83 @@ def list_my_pm(db: Session = Depends(get_db), user: Employee = Depends(get_curre
         PMPlan.status != PMStatus.CANCELLED,
     )
     return q.order_by(PMPlan.planned_date.asc()).all()
+
+
+@router.post("/bulk-complete")
+def bulk_complete_pm(
+    payload: BulkCompleteIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles(Role.TECHNICIAN, Role.SUPERVISOR, Role.MANAGER, Role.ADMIN)),
+):
+    """
+    Marks several PM plans complete in one call (the "select rows, bulk
+    complete" action on the PM Plans page). Deliberately narrower than the
+    single-plan `/complete` endpoint: no attachments, no checklist
+    responses - a plan whose machine has a required checklist must still go
+    through the single-plan flow, since a mandatory sub-step can't be
+    ticked off in bulk. Business rules (critical-machine sign-off, delay
+    classification) are shared with `/complete` via `_apply_pm_completion`
+    so the two paths can't silently diverge.
+    """
+    requested_ids = list(dict.fromkeys(payload.pm_ids))  # de-dupe, keep order
+    if not requested_ids:
+        raise HTTPException(400, "No PM plan IDs provided")
+    if len(requested_ids) > MAX_BULK_COMPLETE:
+        raise HTTPException(400, f"Cannot bulk-complete more than {MAX_BULK_COMPLETE} plans at once")
+
+    actual_date = payload.actual_date or today_local()
+
+    completed: list[str] = []
+    pending_confirmation: list[str] = []
+    skipped: list[dict] = []
+
+    for pm_id in requested_ids:
+        plan = db.query(PMPlan).get(pm_id)
+        if not plan:
+            skipped.append({"id": pm_id, "reason": "not_found"})
+            continue
+
+        if plan.status == PMStatus.COMPLETED:
+            skipped.append({"id": pm_id, "reason": "already_completed"})
+            continue
+        if plan.status == PMStatus.CANCELLED:
+            skipped.append({"id": pm_id, "reason": "already_cancelled"})
+            continue
+        if plan.status == PMStatus.PENDING_SUPERVISOR_CONFIRMATION:
+            skipped.append({"id": pm_id, "reason": "already_pending_supervisor_confirmation"})
+            continue
+
+        machine = db.query(Machine).get(plan.machine_id)
+        machine_number = machine.machine_number if machine else None
+        if machine and machine.checklist_template_id:
+            skipped.append({"id": pm_id, "machine_number": machine_number, "reason": "requires_checklist"})
+            continue
+
+        old_status = plan.status.value if plan.status else None
+        actual = db.query(PMActual).filter(PMActual.pm_plan_id == pm_id).first()
+        if not actual:
+            actual = PMActual(pm_plan_id=pm_id)
+            db.add(actual)
+
+        fully_completed = _apply_pm_completion(db, plan, actual, actual_date, user)
+
+        record_audit(
+            db, action="PM_MODIFIED", entity_type="PMPlan", entity_id=pm_id, actor_id=user.id,
+            old_value={"status": old_status},
+            new_value={"status": plan.status.value, "actual_date": str(actual_date)},
+            commit=False,
+        )
+
+        (completed if fully_completed else pending_confirmation).append(pm_id)
+
+    db.commit()
+
+    return {
+        "requested": len(requested_ids),
+        "completed": completed,
+        "pending_confirmation": pending_confirmation,
+        "skipped": skipped,
+    }
 
 
 @router.get("/{pm_id}", response_model=PMPlanOut)
@@ -144,11 +282,6 @@ async def complete_pm(
         actual = PMActual(pm_plan_id=pm_id)
         db.add(actual)
 
-    actual.actual_date = actual_date
-    actual.completed_by = completed_by or user.id
-    actual.remarks = remarks
-    actual.delay_reason = delay_reason
-    actual.downtime_minutes = downtime_minutes
     db.flush()  # need actual.id before saving checklist responses
 
     if not is_new:
@@ -172,27 +305,11 @@ async def complete_pm(
             f.write(contents)
         actual.attachment_path = stored_path
 
-    if plan.planned_date:
-        delay = (actual_date - plan.planned_date).days
-        actual.delay_days = delay
-        actual.completion_class = (
-            CompletionClass.ON_TIME if delay <= 0 else CompletionClass.LATE
-        ) if delay >= 0 else CompletionClass.EARLY
-
-    # Critical machines (`*`-flagged) need a second set of eyes: a technician
-    # self-reporting completion only gets the job to PENDING_SUPERVISOR_
-    # CONFIRMATION, not COMPLETED - closes the "self-reported completion"
-    # accuracy gap the customer flagged. A supervisor/manager/admin acting
-    # here (e.g. confirming on a technician's behalf) can complete directly,
-    # since that already is the second set of eyes.
-    machine = db.query(Machine).get(plan.machine_id)
-    requires_sign_off = bool(machine and machine.critical and user.role == Role.TECHNICIAN)
-
-    plan.status = PMStatus.PENDING_SUPERVISOR_CONFIRMATION if requires_sign_off else PMStatus.COMPLETED
-    plan.completed_by_technician_id = user.id
-    if not requires_sign_off:
-        plan.confirmed_by_supervisor_id = user.id
-        plan.confirmed_at = datetime.utcnow()
+    requires_sign_off = not _apply_pm_completion(
+        db, plan, actual, actual_date, user,
+        completed_by=completed_by, remarks=remarks,
+        delay_reason=delay_reason, downtime_minutes=downtime_minutes,
+    )
     db.commit()
 
     record_audit(
