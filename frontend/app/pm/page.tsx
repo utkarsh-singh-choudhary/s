@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { api } from "@/lib/api";
-import { StatusPill } from "@/components/StatusPill";
+import PMPlansClient from "./PMPlansClient";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +38,6 @@ export default async function PMPlansPage({
     safe(() => api.machines(), []),
   ]);
 
-  const machineById = new Map(machines.map((m) => [m.id, m]));
   const sorted = [...plans].sort((a, b) => (b.planned_date || "").localeCompare(a.planned_date || ""));
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages);
@@ -61,49 +60,7 @@ export default async function PMPlansPage({
         ))}
       </div>
 
-      <div className="kpi-card !p-0 overflow-hidden">
-        {sorted.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-muted">No PM plans match this filter.</div>
-        ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Machine</th>
-                <th>Planned Date</th>
-                <th>Month</th>
-                <th>FY</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {pageRows.map((p) => {
-                const machine = machineById.get(p.machine_id);
-                return (
-                  <tr key={p.id}>
-                    <td>
-                      <Link href={`/machines/${p.machine_id}`} className="text-accent hover:underline">
-                        {machine ? `${machine.machine_number} — ${machine.machine_name}` : p.machine_id.slice(0, 8)}
-                      </Link>
-                    </td>
-                    <td>{p.planned_date || (p.planned_week ? `Week ${p.planned_week}` : "—")}</td>
-                    <td>{p.month}</td>
-                    <td>{p.financial_year}</td>
-                    <td><StatusPill status={p.status} /></td>
-                    <td>
-                      {p.status !== "COMPLETED" && p.status !== "CANCELLED" && (
-                        <Link href={`/pm/${p.id}/complete`} className="text-xs text-accent hover:underline">
-                          Complete
-                        </Link>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
+      <PMPlansClient rows={pageRows} machines={machines} />
 
       {totalPages > 1 && (
         <div className="flex items-center gap-2 text-sm">
