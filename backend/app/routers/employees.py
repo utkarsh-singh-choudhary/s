@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.auth import require_roles
+from app.core.auth import require_roles, get_current_user
 from app.core.security import hash_password
 from app.core.audit import record_audit
 from app.models.models import Employee, Role
@@ -11,6 +11,10 @@ from app.models.models import Employee, Role
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
 AdminOnly = require_roles(Role.ADMIN)
+
+# Fields that only an Admin may change. Anyone editing their own record may
+# only touch the fields outside this set (name, phone).
+ADMIN_ONLY_FIELDS = {"email", "department", "designation", "role"}
 
 
 class EmployeeIn(BaseModel):
@@ -23,29 +27,43 @@ class EmployeeIn(BaseModel):
     phone: str | None = None
 
 
+class EmployeeUpdate(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    department: str | None = None
+    designation: str | None = None
+    role: Role | None = None
+
+
+def _serialize(e: Employee) -> dict:
+    return {
+        "id": e.id,
+        "employee_code": e.employee_code,
+        "name": e.name,
+        "email": e.email,
+        "phone": e.phone,
+        "department": e.department,
+        "designation": e.designation,
+        "role": e.role,
+        "active": e.active,
+        "notification_email_enabled": e.notification_email_enabled,
+        "notification_whatsapp_enabled": e.notification_whatsapp_enabled,
+    }
+
+
 @router.get("")
 def list_employees(db: Session = Depends(get_db), _user=Depends(AdminOnly)):
     employees = db.query(Employee).order_by(Employee.name).all()
-    return [
-        {
-            "id": e.id,
-            "employee_code": e.employee_code,
-            "name": e.name,
-            "email": e.email,
-            "phone": e.phone,
-            "department": e.department,
-            "designation": e.designation,
-            "role": e.role,
-            "active": e.active,
-            "notification_email_enabled": e.notification_email_enabled,
-            "notification_whatsapp_enabled": e.notification_whatsapp_enabled,
-        }
-        for e in employees
-    ]
+    return [_serialize(e) for e in employees]
 
 
 @router.post("")
 def create_employee(payload: EmployeeIn, db: Session = Depends(get_db), user=Depends(AdminOnly)):
+    existing = db.query(Employee).filter(Employee.email == payload.email).first()
+    if existing:
+        raise HTTPException(status.HTTP_409_CONFLICT, "An employee with this email already exists")
+
     emp = Employee(
         name=payload.name,
         email=payload.email,
@@ -60,3 +78,90 @@ def create_employee(payload: EmployeeIn, db: Session = Depends(get_db), user=Dep
     record_audit(db, action="EMPLOYEE_CREATED", entity_type="Employee", entity_id=emp.id,
                  actor_id=user.id, new_value={"email": emp.email, "role": emp.role.value})
     return {"id": emp.id, "name": emp.name, "email": emp.email, "role": emp.role}
+
+
+@router.put("/{employee_id}")
+def update_employee(
+    employee_id: str,
+    payload: EmployeeUpdate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_user),
+):
+    emp = db.query(Employee).get(employee_id)
+    if not emp:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Employee not found")
+
+    is_admin = user.role == Role.ADMIN
+    is_self = user.id == emp.id
+
+    if not is_admin and not is_self:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions for this action")
+
+    requested = payload.model_dump(exclude_unset=True)
+
+    if not is_admin:
+        disallowed = ADMIN_ONLY_FIELDS & requested.keys()
+        if disallowed:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Only an admin can change: {', '.join(sorted(disallowed))}",
+            )
+
+    if "email" in requested and requested["email"] != emp.email:
+        dupe = db.query(Employee).filter(
+            Employee.email == requested["email"], Employee.id != emp.id
+        ).first()
+        if dupe:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Email already in use by another employee")
+
+    old_value = {
+        "name": emp.name, "email": emp.email, "phone": emp.phone,
+        "department": emp.department, "designation": emp.designation,
+        "role": emp.role.value if emp.role else None,
+    }
+
+    for field, value in requested.items():
+        setattr(emp, field, value)
+
+    db.commit()
+    db.refresh(emp)
+
+    new_value = {
+        "name": emp.name, "email": emp.email, "phone": emp.phone,
+        "department": emp.department, "designation": emp.designation,
+        "role": emp.role.value if emp.role else None,
+    }
+    record_audit(db, action="EMPLOYEE_UPDATED", entity_type="Employee", entity_id=emp.id,
+                 actor_id=user.id, old_value=old_value, new_value=new_value)
+
+    return _serialize(emp)
+
+
+@router.post("/{employee_id}/deactivate")
+def deactivate_employee(employee_id: str, db: Session = Depends(get_db), user: Employee = Depends(AdminOnly)):
+    emp = db.query(Employee).get(employee_id)
+    if not emp:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Employee not found")
+    if emp.id == user.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot deactivate your own account")
+
+    old_active = emp.active
+    emp.active = False
+    db.commit()
+    record_audit(db, action="EMPLOYEE_DEACTIVATED", entity_type="Employee", entity_id=emp.id,
+                 actor_id=user.id, old_value={"active": old_active}, new_value={"active": False})
+    return {"id": emp.id, "active": emp.active}
+
+
+@router.post("/{employee_id}/activate")
+def activate_employee(employee_id: str, db: Session = Depends(get_db), user: Employee = Depends(AdminOnly)):
+    emp = db.query(Employee).get(employee_id)
+    if not emp:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Employee not found")
+
+    old_active = emp.active
+    emp.active = True
+    db.commit()
+    record_audit(db, action="EMPLOYEE_ACTIVATED", entity_type="Employee", entity_id=emp.id,
+                 actor_id=user.id, old_value={"active": old_active}, new_value={"active": True})
+    return {"id": emp.id, "active": emp.active}
