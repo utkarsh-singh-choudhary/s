@@ -15,6 +15,19 @@ export type Machine = {
   checklist_template_id?: string | null;
 };
 
+export type MachineIn = {
+  machine_number: string;
+  machine_name: string;
+  manufacturer?: string;
+  specification?: string;
+  location?: string;
+  remarks?: string;
+  critical?: boolean;
+  checklist_template_id?: string | null;
+};
+
+export type MachineUpdate = Partial<MachineIn>;
+
 export type PMPlan = {
   id: string;
   machine_id: string;
@@ -24,6 +37,13 @@ export type PMPlan = {
   financial_year: string;
   status: string;
   low_confidence_actual: boolean;
+};
+
+export type BulkCompleteResult = {
+  requested: number;
+  completed: string[];
+  pending_confirmation: string[];
+  skipped: { id: string; machine_number?: string; reason: string }[];
 };
 
 export type AppSettingRow = {
@@ -226,7 +246,10 @@ async function apiPut<T>(path: string, body: any): Promise<T> {
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail || `API error ${res.status}: ${path}`);
+  }
   return res.json();
 }
 
@@ -244,10 +267,14 @@ async function apiPost<T>(path: string, body: any): Promise<T> {
 }
 
 export const api = {
-  machines: () => apiGet<Machine[]>("/api/machines"),
+  machines: (activeOnly: boolean = true) => apiGet<Machine[]>(`/api/machines?active_only=${activeOnly}`),
   machine: (id: string) => apiGet<Machine>(`/api/machines/${id}`),
   machineQrcodeUrl: (id: string) => `${API_URL}/api/machines/${id}/qrcode`,
   machineHealthScore: (id: string) => apiGet<HealthScore>(`/api/machines/${id}/health-score`),
+  createMachine: (payload: MachineIn) => apiPost<Machine>("/api/machines", payload),
+  updateMachine: (id: string, payload: MachineUpdate) => apiPut<Machine>(`/api/machines/${id}`, payload),
+  archiveMachine: (id: string) => apiPost<Machine>(`/api/machines/${id}/archive`, {}),
+  restoreMachine: (id: string) => apiPost<Machine>(`/api/machines/${id}/restore`, {}),
 
   pmUpcoming: (days = 14) => apiGet<PMPlan[]>(`/api/pm/upcoming?days=${days}`),
   pmOverdue: () => apiGet<PMPlan[]>("/api/pm/overdue"),
@@ -261,6 +288,8 @@ export const api = {
   },
   pm: (id: string) => apiGet<PMPlan>(`/api/pm/${id}`),
   myPm: () => apiGet<PMPlan[]>("/api/pm/mine"),
+  bulkCompletePM: (pmIds: string[], actualDate?: string) =>
+    apiPost<BulkCompleteResult>("/api/pm/bulk-complete", { pm_ids: pmIds, actual_date: actualDate }),
 
   health: () => apiGet<Record<string, string>>("/health"),
   auditLogs: () => apiGet<any[]>("/api/audit-logs"),
@@ -269,6 +298,10 @@ export const api = {
   updateAdminSetting: (key: string, value: any) => apiPut<{ key: string; value: any }>(`/api/admin/settings/${key}`, { value }),
 
   employees: () => apiGet<Employee[]>("/api/employees"),
+  updateEmployee: (id: string, payload: Partial<Pick<Employee, "name" | "email" | "phone" | "department" | "designation" | "role">>) =>
+    apiPut<Employee>(`/api/employees/${id}`, payload),
+  activateEmployee: (id: string) => apiPost<{ id: string; active: boolean }>(`/api/employees/${id}/activate`, {}),
+  deactivateEmployee: (id: string) => apiPost<{ id: string; active: boolean }>(`/api/employees/${id}/deactivate`, {}),
 
   breakdowns: (params: { machine_id?: string; open_only?: boolean } = {}) => {
     const qs = new URLSearchParams();
