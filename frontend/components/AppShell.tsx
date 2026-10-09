@@ -49,7 +49,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         {user && (
           <div className="px-4 py-3 border-t border-white/10 text-xs">
-            <div className="font-medium">{user.name}</div>
+            <Link href="/profile" className="font-medium hover:underline">
+              {user.name}
+            </Link>
             <div className="text-white/50">{user.role}</div>
             <button
               onClick={() => logout()}
