@@ -34,6 +34,19 @@ class StockAdjustIn(BaseModel):
     work_order_id: str | None = None
 
 
+class SparePartUpdateIn(BaseModel):
+    # part_code and stock_on_hand are deliberately excluded - part_code is an
+    # identifier, and stock only changes via /adjust so the SparePartTransaction
+    # ledger stays the single source of truth for stock history.
+    name: str | None = None
+    description: str | None = None
+    unit: str | None = None
+    minimum_stock: int | None = None
+    unit_cost: int | None = None
+    storage_location: str | None = None
+    preferred_vendor: str | None = None
+
+
 def _serialize(p: SparePart) -> dict:
     available = p.stock_on_hand - p.reserved_stock
     return {
@@ -121,6 +134,33 @@ def create_spare_part(payload: SparePartIn, db: Session = Depends(get_db), user:
         db.commit()
     record_audit(db, action="SPARE_PART_CREATED", entity_type="SparePart", entity_id=part.id,
                  actor_id=user.id, new_value={"part_code": part.part_code, "name": part.name})
+    return _serialize(part)
+
+
+@router.put("/{part_id}")
+def update_spare_part(part_id: str, payload: SparePartUpdateIn, db: Session = Depends(get_db), user: Employee = Depends(ManageRoles)):
+    part = db.query(SparePart).get(part_id)
+    if not part:
+        raise HTTPException(404, "Spare part not found")
+
+    requested = payload.model_dump(exclude_unset=True)
+    old_value = {
+        "name": part.name, "description": part.description, "unit": part.unit,
+        "minimum_stock": part.minimum_stock, "unit_cost": part.unit_cost,
+        "storage_location": part.storage_location, "preferred_vendor": part.preferred_vendor,
+    }
+    for field, value in requested.items():
+        setattr(part, field, value)
+    part.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(part)
+    new_value = {
+        "name": part.name, "description": part.description, "unit": part.unit,
+        "minimum_stock": part.minimum_stock, "unit_cost": part.unit_cost,
+        "storage_location": part.storage_location, "preferred_vendor": part.preferred_vendor,
+    }
+    record_audit(db, action="SPARE_PART_UPDATED", entity_type="SparePart", entity_id=part.id,
+                 actor_id=user.id, old_value=old_value, new_value=new_value)
     return _serialize(part)
 
 
