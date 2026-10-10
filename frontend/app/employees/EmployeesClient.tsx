@@ -2,11 +2,17 @@
 
 import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, Employee } from "@/lib/api";
+import { api, Employee, BulkStatusResult } from "@/lib/api";
 import { StatusPill } from "@/components/StatusPill";
 import { getUser } from "@/lib/auth";
 
 const ROLES = ["ADMIN", "MANAGER", "SUPERVISOR", "TECHNICIAN", "VIEWER"];
+
+const BULK_SKIP_REASON_LABEL: Record<string, string> = {
+  not_found: "Employee no longer exists",
+  cannot_deactivate_self: "You cannot deactivate your own account",
+  already_in_target_state: "Already in that state",
+};
 
 type EditState = {
   name: string;
@@ -35,9 +41,46 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
   const [edit, setEdit] = useState<EditState | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkStatusResult | null>(null);
 
   const me = getUser();
   const isAdmin = me?.role === "ADMIN";
+
+  const selectableEmployees = employees.filter((e) => e.id !== me?.employee_id);
+  const allSelected = selectableEmployees.length > 0 && selectableEmployees.every((e) => selected.has(e.id));
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(selectableEmployees.map((e) => e.id)));
+  }
+
+  async function runBulk(active: boolean) {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    setError(null);
+    setBulkResult(null);
+    try {
+      const res = await api.bulkSetEmployeeStatus(Array.from(selected), active);
+      setBulkResult(res);
+      const updatedIds = new Set(res.updated);
+      setEmployees((prev) => prev.map((e) => (updatedIds.has(e.id) ? { ...e, active } : e)));
+      setSelected(new Set());
+      router.refresh();
+    } catch (err: any) {
+      setError(err.message || "Bulk update failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
 
   function startEdit(e: Employee) {
     setError(null);
@@ -100,6 +143,50 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
 
       {error && <div className="text-sm text-bad">{error}</div>}
 
+      {isAdmin && selected.size > 0 && (
+        <div className="flex items-center gap-3 rounded-sm border border-border bg-panel px-3 py-2">
+          <span className="text-sm text-ink">{selected.size} selected</span>
+          <button
+            onClick={() => runBulk(true)}
+            disabled={bulkBusy}
+            className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90 disabled:opacity-50"
+          >
+            Activate
+          </button>
+          <button
+            onClick={() => runBulk(false)}
+            disabled={bulkBusy}
+            className="text-sm px-3 py-1.5 rounded-sm border border-border hover:bg-surface disabled:opacity-50"
+          >
+            Deactivate
+          </button>
+          <button onClick={() => setSelected(new Set())} className="text-xs text-muted hover:underline">
+            Clear selection
+          </button>
+        </div>
+      )}
+
+      {bulkResult && (
+        <div className="rounded-sm border border-border bg-panel px-3 py-2 text-sm space-y-1">
+          <div className="text-ink">
+            {bulkResult.updated.length} updated
+            {bulkResult.skipped.length > 0 && `, ${bulkResult.skipped.length} skipped`} of {bulkResult.requested} requested.
+          </div>
+          {bulkResult.skipped.length > 0 && (
+            <ul className="text-xs text-muted list-disc list-inside">
+              {bulkResult.skipped.map((s) => (
+                <li key={s.id}>
+                  {employees.find((e) => e.id === s.id)?.name || s.id.slice(0, 8)} — {BULK_SKIP_REASON_LABEL[s.reason] || s.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+          <button onClick={() => setBulkResult(null)} className="text-xs text-accent hover:underline">
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div className="kpi-card !p-0 overflow-hidden">
         {employees.length === 0 ? (
           <div className="px-4 py-6 text-sm text-muted">
@@ -109,6 +196,11 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
           <table className="data-table">
             <thead>
               <tr>
+                {isAdmin && (
+                  <th className="w-8">
+                    <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all" />
+                  </th>
+                )}
                 <th>Name</th>
                 <th>Role</th>
                 <th>Department</th>
@@ -124,6 +216,18 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
                 return (
                   <Fragment key={e.id}>
                     <tr>
+                      {isAdmin && (
+                        <td>
+                          {e.id !== me?.employee_id && (
+                            <input
+                              type="checkbox"
+                              checked={selected.has(e.id)}
+                              onChange={() => toggleSelected(e.id)}
+                              aria-label={`Select ${e.name}`}
+                            />
+                          )}
+                        </td>
+                      )}
                       <td className="font-medium">{e.name}</td>
                       <td>{e.role}</td>
                       <td>{e.department || "—"}</td>
@@ -152,7 +256,7 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
                     </tr>
                     {open && edit && (
                       <tr>
-                        <td colSpan={7} className="bg-panel px-4 py-3">
+                        <td colSpan={isAdmin ? 8 : 7} className="bg-panel px-4 py-3">
                           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                             <label className="text-xs space-y-1">
                               <span className="text-muted">Name</span>
