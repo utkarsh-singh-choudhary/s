@@ -43,6 +43,13 @@ class WorkOrderIn(BaseModel):
     due_date: date | None = None
 
 
+class WorkOrderUpdateIn(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    priority: WorkOrderPriority | None = None
+    due_date: date | None = None
+
+
 class WorkOrderStatusIn(BaseModel):
     status: WorkOrderStatus
     root_cause: str | None = None
@@ -169,6 +176,49 @@ def create_work_order(payload: WorkOrderIn, db: Session = Depends(get_db), user:
     db.commit()
     record_audit(db, action="WORK_ORDER_CREATED", entity_type="WorkOrder", entity_id=wo.id,
                  actor_id=user.id, new_value={"machine_id": payload.machine_id, "title": payload.title})
+    names = _employee_names(db, [wo])
+    return _serialize(wo, names)
+
+
+@router.put("/{work_order_id}")
+def update_work_order(
+    work_order_id: str,
+    payload: WorkOrderUpdateIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(LogRoles),
+):
+    """Edit the descriptive fields of a work order (title, description, priority, due date).
+    Status/RCA/parts changes go through /status; assignment through /assign."""
+    wo = db.query(WorkOrder).get(work_order_id)
+    if not wo:
+        raise HTTPException(404, "Work order not found")
+
+    is_privileged = user.role in (Role.SUPERVISOR, Role.MANAGER, Role.ADMIN)
+    if not is_privileged and wo.reported_by != user.id:
+        raise HTTPException(403, "You can only edit work orders you reported")
+    if wo.status == WorkOrderStatus.CLOSED:
+        raise HTTPException(400, "Cannot edit a closed work order")
+
+    requested = payload.model_dump(exclude_unset=True)
+    if "title" in requested and not (requested["title"] or "").strip():
+        raise HTTPException(400, "Title cannot be empty")
+
+    old_value = {
+        "title": wo.title, "description": wo.description,
+        "priority": wo.priority.value if wo.priority else None,
+        "due_date": str(wo.due_date) if wo.due_date else None,
+    }
+    for field, value in requested.items():
+        setattr(wo, field, value)
+    db.commit()
+    db.refresh(wo)
+    record_audit(db, action="WORK_ORDER_UPDATED", entity_type="WorkOrder", entity_id=wo.id,
+                 actor_id=user.id, old_value=old_value,
+                 new_value={
+                     "title": wo.title, "description": wo.description,
+                     "priority": wo.priority.value if wo.priority else None,
+                     "due_date": str(wo.due_date) if wo.due_date else None,
+                 })
     names = _employee_names(db, [wo])
     return _serialize(wo, names)
 
