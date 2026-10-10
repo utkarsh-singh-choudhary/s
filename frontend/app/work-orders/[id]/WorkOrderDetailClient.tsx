@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { api, ConsumedPart, Employee, Machine, SparePart, WorkOrder, WORK_ORDER_STATUSES } from "@/lib/api";
+import { getUser } from "@/lib/auth";
+import { api, ConsumedPart, Employee, Machine, SparePart, WorkOrder, WORK_ORDER_STATUSES, WORK_ORDER_PRIORITIES } from "@/lib/api";
 
 type Why = { question: string; answer: string };
 
@@ -39,8 +40,47 @@ export default function WorkOrderDetailClient({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [editingDetails, setEditingDetails] = useState(false);
+  const [detailTitle, setDetailTitle] = useState(wo.title);
+  const [detailDescription, setDetailDescription] = useState(wo.description || "");
+  const [detailPriority, setDetailPriority] = useState<string>(wo.priority);
+  const [detailDueDate, setDetailDueDate] = useState(wo.due_date || "");
 
   const machine = machines.find((m) => m.id === wo.machine_id);
+
+  const me = getUser();
+  const isPrivileged = me?.role === "SUPERVISOR" || me?.role === "MANAGER" || me?.role === "ADMIN";
+  const canEditDetails = wo.status !== "CLOSED" && (isPrivileged || (!!me?.employee_id && wo.reported_by === me.employee_id));
+
+  function startEditDetails() {
+    setDetailTitle(wo.title);
+    setDetailDescription(wo.description || "");
+    setDetailPriority(wo.priority);
+    setDetailDueDate(wo.due_date || "");
+    setError(null);
+    setEditingDetails(true);
+  }
+
+  async function saveDetails(e: React.FormEvent) {
+    e.preventDefault();
+    if (!detailTitle.trim()) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await api.updateWorkOrder(wo.id, {
+        title: detailTitle.trim(),
+        description: detailDescription,
+        priority: detailPriority,
+        due_date: detailDueDate || null,
+      });
+      setWo(updated);
+      setEditingDetails(false);
+    } catch (err: any) {
+      setError(err.message || "Failed to update work order details");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function saveStatus(e: React.FormEvent) {
     e.preventDefault();
@@ -110,6 +150,11 @@ export default function WorkOrderDetailClient({
         <div className="flex items-center gap-3 mt-1">
           <h1 className="text-lg font-semibold text-ink">{wo.display_number} — {wo.title}</h1>
           <span className="status-pill bg-gray-100 text-muted">{wo.priority}</span>
+          {canEditDetails && !editingDetails && (
+            <button onClick={startEditDetails} className="text-xs text-accent hover:underline">
+              Edit details
+            </button>
+          )}
         </div>
         <p className="text-sm text-muted">
           {machine ? (
@@ -122,11 +167,48 @@ export default function WorkOrderDetailClient({
         </p>
       </div>
 
-      {wo.description && (
-        <div className="kpi-card text-sm">
-          <div className="text-xs text-muted uppercase tracking-wide mb-1">Description</div>
-          {wo.description}
-        </div>
+      {editingDetails ? (
+        <form onSubmit={saveDetails} className="kpi-card space-y-3">
+          <div className="font-medium text-sm">Edit details</div>
+          {error && <div className="text-xs text-bad bg-red-50 border border-red-100 rounded-sm px-3 py-2">{error}</div>}
+          <div>
+            <label className="text-xs text-muted block mb-1">Title</label>
+            <input value={detailTitle} onChange={(e) => setDetailTitle(e.target.value)} required className="w-full border border-border rounded-sm px-2 py-1.5 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-muted block mb-1">Description</label>
+            <textarea value={detailDescription} onChange={(e) => setDetailDescription(e.target.value)} rows={3} className="w-full border border-border rounded-sm px-2 py-1.5 text-sm" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-muted block mb-1">Priority</label>
+              <select value={detailPriority} onChange={(e) => setDetailPriority(e.target.value)} className="w-full border border-border rounded-sm px-2 py-1.5 text-sm">
+                {WORK_ORDER_PRIORITIES.map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-muted block mb-1">Due date</label>
+              <input type="date" value={detailDueDate} onChange={(e) => setDetailDueDate(e.target.value)} className="w-full border border-border rounded-sm px-2 py-1.5 text-sm" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button type="submit" disabled={submitting} className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90 disabled:opacity-50">
+              {submitting ? "Saving…" : "Save details"}
+            </button>
+            <button type="button" onClick={() => setEditingDetails(false)} className="text-sm px-3 py-1.5 rounded-sm border border-border">
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        wo.description && (
+          <div className="kpi-card text-sm">
+            <div className="text-xs text-muted uppercase tracking-wide mb-1">Description</div>
+            {wo.description}
+          </div>
+        )
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
