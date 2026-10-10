@@ -90,6 +90,14 @@ class BulkCompleteIn(BaseModel):
     actual_date: date | None = None
 
 
+class PMPlanUpdateIn(BaseModel):
+    planned_date: date | None = None
+    assigned_to: str | None = None
+
+
+EditPlanRoles = require_roles(Role.SUPERVISOR, Role.MANAGER, Role.ADMIN)
+
+
 @router.get("", response_model=list[PMPlanOut])
 def list_pm(db: Session = Depends(get_db), status: str | None = None, machine_id: str | None = None):
     q = db.query(PMPlan)
@@ -227,6 +235,41 @@ def get_pm(pm_id: str, db: Session = Depends(get_db)):
     plan = db.query(PMPlan).get(pm_id)
     if not plan:
         raise HTTPException(404, "PM plan not found")
+    return plan
+
+
+@router.put("/{pm_id}", response_model=PMPlanOut)
+def update_pm(
+    pm_id: str,
+    payload: PMPlanUpdateIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(EditPlanRoles),
+):
+    """Reschedule the planned date or reassign a PM plan. Only while it's still
+    actionable - once it's completed (or pending sign-off) the record is history,
+    not a schedule, so edit the PMActual via /complete instead."""
+    plan = db.query(PMPlan).get(pm_id)
+    if not plan:
+        raise HTTPException(404, "PM plan not found")
+    if plan.status in (PMStatus.COMPLETED, PMStatus.PENDING_SUPERVISOR_CONFIRMATION):
+        raise HTTPException(400, "Cannot reschedule a PM plan that is already completed or awaiting sign-off")
+
+    if payload.assigned_to is not None:
+        if payload.assigned_to and not db.query(Employee).get(payload.assigned_to):
+            raise HTTPException(404, "Assigned employee not found")
+
+    old_value = {"planned_date": str(plan.planned_date) if plan.planned_date else None, "assigned_to": plan.assigned_to}
+
+    if payload.planned_date is not None:
+        plan.planned_date = payload.planned_date
+    if payload.assigned_to is not None:
+        plan.assigned_to = payload.assigned_to or None
+
+    db.commit()
+    db.refresh(plan)
+    record_audit(db, action="PM_PLAN_RESCHEDULED", entity_type="PMPlan", entity_id=plan.id,
+                 actor_id=user.id, old_value=old_value,
+                 new_value={"planned_date": str(plan.planned_date) if plan.planned_date else None, "assigned_to": plan.assigned_to})
     return plan
 
 
