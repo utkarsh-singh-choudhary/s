@@ -28,6 +28,7 @@ class PMPlanOut(BaseModel):
     financial_year: str
     status: str
     low_confidence_actual: bool
+    assigned_to: Optional[str] = None
 
     class Config:
         from_attributes = True
