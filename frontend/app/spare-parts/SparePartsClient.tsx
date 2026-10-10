@@ -1,7 +1,30 @@
 "use client";
 
-import { useState } from "react";
-import { api, SparePart } from "@/lib/api";
+import { Fragment, useState } from "react";
+import { getUser } from "@/lib/auth";
+import { api, SparePart, SparePartTransaction } from "@/lib/api";
+
+type EditState = {
+  name: string;
+  unit: string;
+  minimum_stock: string;
+  unit_cost: string;
+  storage_location: string;
+  preferred_vendor: string;
+  description: string;
+};
+
+function toEditState(p: SparePart): EditState {
+  return {
+    name: p.name,
+    unit: p.unit,
+    minimum_stock: String(p.minimum_stock),
+    unit_cost: p.unit_cost != null ? String(p.unit_cost) : "",
+    storage_location: p.storage_location || "",
+    preferred_vendor: p.preferred_vendor || "",
+    description: p.description || "",
+  };
+}
 
 export default function SparePartsClient({ initialParts }: { initialParts: SparePart[] }) {
   const [parts, setParts] = useState(initialParts);
@@ -10,6 +33,14 @@ export default function SparePartsClient({ initialParts }: { initialParts: Spare
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editState, setEditState] = useState<EditState | null>(null);
+  const [historyId, setHistoryId] = useState<string | null>(null);
+  const [history, setHistory] = useState<SparePartTransaction[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const me = getUser();
+  const canManage = me?.role === "SUPERVISOR" || me?.role === "MANAGER" || me?.role === "ADMIN";
 
   const [partCode, setPartCode] = useState("");
   const [name, setName] = useState("");
@@ -68,6 +99,59 @@ export default function SparePartsClient({ initialParts }: { initialParts: Spare
       setError(err.message || "Failed to adjust stock");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  function startEdit(p: SparePart) {
+    setEditingId(p.id);
+    setEditState(toEditState(p));
+    setHistoryId(null);
+    setError(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditState(null);
+  }
+
+  async function saveEdit(id: string) {
+    if (!editState) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.updateSparePart(id, {
+        name: editState.name.trim(),
+        unit: editState.unit,
+        minimum_stock: Number(editState.minimum_stock) || 0,
+        unit_cost: editState.unit_cost !== "" ? Number(editState.unit_cost) : undefined,
+        storage_location: editState.storage_location,
+        preferred_vendor: editState.preferred_vendor,
+        description: editState.description,
+      });
+      cancelEdit();
+      await refresh();
+    } catch (err: any) {
+      setError(err.message || "Failed to update spare part");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function toggleHistory(id: string) {
+    if (historyId === id) {
+      setHistoryId(null);
+      return;
+    }
+    setHistoryId(id);
+    setEditingId(null);
+    setHistory([]);
+    setHistoryLoading(true);
+    try {
+      setHistory(await api.sparePartTransactions(id));
+    } catch (err: any) {
+      setError(err.message || "Failed to load stock history");
+    } finally {
+      setHistoryLoading(false);
     }
   }
 
@@ -153,7 +237,8 @@ export default function SparePartsClient({ initialParts }: { initialParts: Spare
             </thead>
             <tbody>
               {visibleParts.map((p) => (
-                <tr key={p.id}>
+                <Fragment key={p.id}>
+                <tr>
                   <td className="font-mono text-xs">{p.part_code}</td>
                   <td>{p.name}</td>
                   <td className={p.low_stock ? "text-bad font-medium" : ""}>{p.stock_on_hand} {p.unit}</td>
@@ -174,8 +259,106 @@ export default function SparePartsClient({ initialParts }: { initialParts: Spare
                         Adjust stock
                       </button>
                     )}
+                    {canManage && (
+                      <button onClick={() => (editingId === p.id ? cancelEdit() : startEdit(p))} className="text-xs text-accent hover:underline ml-2">
+                        {editingId === p.id ? "Close" : "Edit"}
+                      </button>
+                    )}
+                    <button onClick={() => toggleHistory(p.id)} className="text-xs text-muted hover:underline ml-2">
+                      {historyId === p.id ? "Hide history" : "History"}
+                    </button>
                   </td>
                 </tr>
+                {editingId === p.id && editState && (
+                  <tr>
+                    <td colSpan={8} className="bg-panel px-4 py-3">
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        <label className="text-xs space-y-1">
+                          <span className="text-muted">Name</span>
+                          <input value={editState.name} onChange={(ev) => setEditState({ ...editState, name: ev.target.value })}
+                            className="border border-border rounded-sm px-2 py-1 text-sm w-full" />
+                        </label>
+                        <label className="text-xs space-y-1">
+                          <span className="text-muted">Unit</span>
+                          <select value={editState.unit} onChange={(ev) => setEditState({ ...editState, unit: ev.target.value })}
+                            className="border border-border rounded-sm px-2 py-1 text-sm w-full">
+                            {["pcs", "ltr", "kg", "mtr"].map((u) => (
+                              <option key={u} value={u}>{u}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="text-xs space-y-1">
+                          <span className="text-muted">Minimum stock</span>
+                          <input type="number" min={0} value={editState.minimum_stock}
+                            onChange={(ev) => setEditState({ ...editState, minimum_stock: ev.target.value })}
+                            className="border border-border rounded-sm px-2 py-1 text-sm w-full" />
+                        </label>
+                        <label className="text-xs space-y-1">
+                          <span className="text-muted">Unit cost</span>
+                          <input type="number" min={0} value={editState.unit_cost}
+                            onChange={(ev) => setEditState({ ...editState, unit_cost: ev.target.value })}
+                            className="border border-border rounded-sm px-2 py-1 text-sm w-full" />
+                        </label>
+                        <label className="text-xs space-y-1">
+                          <span className="text-muted">Storage location</span>
+                          <input value={editState.storage_location}
+                            onChange={(ev) => setEditState({ ...editState, storage_location: ev.target.value })}
+                            className="border border-border rounded-sm px-2 py-1 text-sm w-full" />
+                        </label>
+                        <label className="text-xs space-y-1">
+                          <span className="text-muted">Preferred vendor</span>
+                          <input value={editState.preferred_vendor}
+                            onChange={(ev) => setEditState({ ...editState, preferred_vendor: ev.target.value })}
+                            className="border border-border rounded-sm px-2 py-1 text-sm w-full" />
+                        </label>
+                        <label className="text-xs space-y-1 col-span-2 md:col-span-3">
+                          <span className="text-muted">Description</span>
+                          <input value={editState.description}
+                            onChange={(ev) => setEditState({ ...editState, description: ev.target.value })}
+                            className="border border-border rounded-sm px-2 py-1 text-sm w-full" />
+                        </label>
+                      </div>
+                      <p className="text-xs text-muted mt-2">Stock quantity changes only via "Adjust stock", so the history stays accurate.</p>
+                      <div className="mt-3 flex gap-2">
+                        <button disabled={submitting} onClick={() => saveEdit(p.id)}
+                          className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90 disabled:opacity-50">
+                          {submitting ? "Saving…" : "Save"}
+                        </button>
+                        <button onClick={cancelEdit} className="text-sm px-3 py-1.5 rounded-sm border border-border">Cancel</button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {historyId === p.id && (
+                  <tr>
+                    <td colSpan={8} className="bg-panel px-4 py-3">
+                      {historyLoading ? (
+                        <div className="text-xs text-muted">Loading…</div>
+                      ) : history.length === 0 ? (
+                        <div className="text-xs text-muted">No stock movements recorded.</div>
+                      ) : (
+                        <table className="data-table">
+                          <thead>
+                            <tr><th>Date</th><th>Change</th><th>Reason</th><th>By</th></tr>
+                          </thead>
+                          <tbody>
+                            {history.map((t) => (
+                              <tr key={t.id}>
+                                <td className="text-xs">{new Date(t.created_at).toLocaleString()}</td>
+                                <td className={`text-xs font-medium ${t.change < 0 ? "text-bad" : "text-good"}`}>
+                                  {t.change > 0 ? `+${t.change}` : t.change}
+                                </td>
+                                <td className="text-xs">{t.reason || "—"}</td>
+                                <td className="text-xs">{t.performed_by_name || "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
