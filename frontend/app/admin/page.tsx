@@ -9,6 +9,9 @@ export default function AdminSettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [testEmailTo, setTestEmailTo] = useState("");
+  const [testEmailSending, setTestEmailSending] = useState(false);
+  const [testEmailResult, setTestEmailResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     api
@@ -42,6 +45,25 @@ export default function AdminSettingsPage() {
     }
   }
 
+  async function handleSendTestEmail(e: React.FormEvent) {
+    e.preventDefault();
+    if (!testEmailTo.trim()) return;
+    setTestEmailSending(true);
+    setTestEmailResult(null);
+    try {
+      const res = await api.sendTestEmail(testEmailTo.trim());
+      setTestEmailResult(
+        res.success
+          ? { ok: true, message: `Test email sent via ${res.provider || "the active provider"}.` }
+          : { ok: false, message: res.error || "Sending failed." }
+      );
+    } catch (err: any) {
+      setTestEmailResult({ ok: false, message: err.message || "Sending failed." });
+    } finally {
+      setTestEmailSending(false);
+    }
+  }
+
   return (
     <div className="p-6 space-y-4 max-w-3xl">
       <div>
@@ -55,6 +77,33 @@ export default function AdminSettingsPage() {
       {error && (
         <div className="text-xs text-bad bg-red-50 border border-red-100 rounded-sm px-3 py-2">{error}</div>
       )}
+
+      <form onSubmit={handleSendTestEmail} className="kpi-card gap-2">
+        <div className="font-medium text-sm text-ink">Send test email</div>
+        <div className="text-xs text-muted">
+          Sends a test message through the active email provider so you can confirm reminders will actually be delivered.
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="email"
+            required
+            value={testEmailTo}
+            onChange={(e) => setTestEmailTo(e.target.value)}
+            placeholder="recipient@example.com"
+            className="border border-border rounded-sm px-3 py-1.5 text-sm flex-1"
+          />
+          <button
+            type="submit"
+            disabled={testEmailSending}
+            className="bg-ink text-white text-xs rounded-sm px-3 py-2 hover:opacity-90 disabled:opacity-50"
+          >
+            {testEmailSending ? "Sending…" : "Send test"}
+          </button>
+        </div>
+        {testEmailResult && (
+          <div className={`text-xs ${testEmailResult.ok ? "text-good" : "text-bad"}`}>{testEmailResult.message}</div>
+        )}
+      </form>
 
       {loading ? (
         <div className="text-sm text-muted">Loading…</div>
