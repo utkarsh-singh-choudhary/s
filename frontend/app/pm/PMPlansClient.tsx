@@ -3,10 +3,12 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { api, PMPlan, Machine, BulkCompleteResult } from "@/lib/api";
+import { getUser } from "@/lib/auth";
+import { api, PMPlan, Machine, Employee, BulkCompleteResult } from "@/lib/api";
 import { StatusPill } from "@/components/StatusPill";
 
 const NOT_SELECTABLE = new Set(["COMPLETED", "CANCELLED"]);
+const NOT_RESCHEDULABLE = new Set(["COMPLETED", "PENDING_SUPERVISOR_CONFIRMATION"]);
 
 const SKIP_REASON_LABEL: Record<string, string> = {
   not_found: "Plan no longer exists",
@@ -16,14 +18,21 @@ const SKIP_REASON_LABEL: Record<string, string> = {
   requires_checklist: "Has a required checklist — complete individually",
 };
 
-export default function PMPlansClient({ rows, machines }: { rows: PMPlan[]; machines: Machine[] }) {
+export default function PMPlansClient({ rows, machines, employees }: { rows: PMPlan[]; machines: Machine[]; employees: Employee[] }) {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<BulkCompleteResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDate, setEditDate] = useState("");
+  const [editAssignee, setEditAssignee] = useState("");
+
+  const me = getUser();
+  const canReschedule = me?.role === "SUPERVISOR" || me?.role === "MANAGER" || me?.role === "ADMIN";
 
   const machineById = useMemo(() => new Map(machines.map((m) => [m.id, m])), [machines]);
+  const employeeById = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
   const selectableRows = rows.filter((p) => !NOT_SELECTABLE.has(p.status));
   const allSelected = selectableRows.length > 0 && selectableRows.every((p) => selected.has(p.id));
 
@@ -54,6 +63,30 @@ export default function PMPlansClient({ rows, machines }: { rows: PMPlan[]; mach
       router.refresh();
     } catch (err: any) {
       setError(err.message || "Bulk complete failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEdit(p: PMPlan) {
+    setEditingId(p.id);
+    setEditDate(p.planned_date || "");
+    setEditAssignee(p.assigned_to || "");
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  async function saveEdit(id: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updatePM(id, { planned_date: editDate || null, assigned_to: editAssignee || null });
+      setEditingId(null);
+      router.refresh();
+    } catch (err: any) {
+      setError(err.message || "Failed to reschedule PM plan");
     } finally {
       setBusy(false);
     }
@@ -114,6 +147,7 @@ export default function PMPlansClient({ rows, machines }: { rows: PMPlan[]; mach
                 </th>
                 <th>Machine</th>
                 <th>Planned Date</th>
+                <th>Assigned To</th>
                 <th>Month</th>
                 <th>FY</th>
                 <th>Status</th>
@@ -124,6 +158,35 @@ export default function PMPlansClient({ rows, machines }: { rows: PMPlan[]; mach
               {rows.map((p) => {
                 const machine = machineById.get(p.machine_id);
                 const selectable = !NOT_SELECTABLE.has(p.status);
+                const reschedulable = canReschedule && !NOT_RESCHEDULABLE.has(p.status);
+                if (editingId === p.id) {
+                  return (
+                    <tr key={p.id}>
+                      <td colSpan={8}>
+                        <div className="flex flex-wrap items-end gap-2 py-1">
+                          <div>
+                            <label className="text-xs text-muted block mb-0.5">Planned date</label>
+                            <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)}
+                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs" />
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted block mb-0.5">Assigned to</label>
+                            <select value={editAssignee} onChange={(e) => setEditAssignee(e.target.value)}
+                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs">
+                              <option value="">Unassigned</option>
+                              {employees.map((e) => (
+                                <option key={e.id} value={e.id}>{e.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <button disabled={busy} onClick={() => saveEdit(p.id)}
+                            className="text-xs text-good hover:underline disabled:opacity-50">Save</button>
+                          <button onClick={cancelEdit} className="text-xs text-muted hover:underline">Cancel</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
                 return (
                   <tr key={p.id}>
                     <td>
@@ -142,15 +205,23 @@ export default function PMPlansClient({ rows, machines }: { rows: PMPlan[]; mach
                       </Link>
                     </td>
                     <td>{p.planned_date || (p.planned_week ? `Week ${p.planned_week}` : "—")}</td>
+                    <td>{p.assigned_to ? employeeById.get(p.assigned_to)?.name || p.assigned_to.slice(0, 8) : "—"}</td>
                     <td>{p.month}</td>
                     <td>{p.financial_year}</td>
                     <td><StatusPill status={p.status} /></td>
                     <td>
-                      {p.status !== "COMPLETED" && p.status !== "CANCELLED" && (
-                        <Link href={`/pm/${p.id}/complete`} className="text-xs text-accent hover:underline">
-                          Complete
-                        </Link>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {p.status !== "COMPLETED" && p.status !== "CANCELLED" && (
+                          <Link href={`/pm/${p.id}/complete`} className="text-xs text-accent hover:underline">
+                            Complete
+                          </Link>
+                        )}
+                        {reschedulable && (
+                          <button onClick={() => startEdit(p)} className="text-xs text-muted hover:underline">
+                            Reschedule
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
