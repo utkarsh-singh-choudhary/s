@@ -37,6 +37,7 @@ export type PMPlan = {
   financial_year: string;
   status: string;
   low_confidence_actual: boolean;
+  assigned_to?: string | null;
 };
 
 export type BulkCompleteResult = {
@@ -44,6 +45,25 @@ export type BulkCompleteResult = {
   completed: string[];
   pending_confirmation: string[];
   skipped: { id: string; machine_number?: string; reason: string }[];
+};
+
+export type BulkStatusResult = {
+  requested: number;
+  updated: string[];
+  skipped: { id: string; reason: string }[];
+};
+
+export type AuditLogEntry = {
+  id: string;
+  actor_id?: string | null;
+  actor_name?: string | null;
+  action: string;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  old_value?: any;
+  new_value?: any;
+  ip_address?: string | null;
+  created_at: string;
 };
 
 export type AppSettingRow = {
@@ -94,7 +114,10 @@ export type ReliabilityRow = {
 };
 
 export type ChecklistItem = { id: string; sequence: number; text: string; required: boolean };
-export type ChecklistTemplate = { id: string; name: string; description?: string; items: ChecklistItem[] };
+export type ChecklistTemplate = { id: string; name: string; description?: string; active: boolean; items: ChecklistItem[] };
+export type ChecklistItemIn = { text: string; required?: boolean };
+export type ChecklistTemplateIn = { name: string; description?: string; items: ChecklistItemIn[] };
+export type ChecklistTemplateUpdate = { name?: string; description?: string; items?: ChecklistItemIn[] };
 
 export const WORK_ORDER_STATUSES = [
   "OPEN", "ASSIGNED", "IN_PROGRESS", "WAITING_PARTS", "WAITING_APPROVAL", "COMPLETED", "VERIFIED", "CLOSED",
@@ -290,16 +313,40 @@ export const api = {
   myPm: () => apiGet<PMPlan[]>("/api/pm/mine"),
   bulkCompletePM: (pmIds: string[], actualDate?: string) =>
     apiPost<BulkCompleteResult>("/api/pm/bulk-complete", { pm_ids: pmIds, actual_date: actualDate }),
+  updatePM: (id: string, payload: Partial<{ planned_date: string | null; assigned_to: string | null }>) =>
+    apiPut<PMPlan>(`/api/pm/${id}`, payload),
 
   health: () => apiGet<Record<string, string>>("/health"),
-  auditLogs: () => apiGet<any[]>("/api/audit-logs"),
+  auditLogs: (
+    params: { limit?: number; entity_type?: string; action?: string; actor_id?: string; date_from?: string; date_to?: string } = {}
+  ) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+    });
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return apiGet<AuditLogEntry[]>(`/api/audit-logs${suffix}`);
+  },
+  auditEntityTypes: () => apiGet<string[]>("/api/audit-logs/entity-types"),
 
   adminSettings: () => apiGet<AppSettingRow[]>("/api/admin/settings"),
   updateAdminSetting: (key: string, value: any) => apiPut<{ key: string; value: any }>(`/api/admin/settings/${key}`, { value }),
+  sendTestEmail: (to: string) =>
+    apiPost<{ success: boolean; provider?: string; error?: string | null }>("/api/admin/settings/test-email", { to }),
 
   employees: () => apiGet<Employee[]>("/api/employees"),
-  updateEmployee: (id: string, payload: Partial<Pick<Employee, "name" | "email" | "phone" | "department" | "designation" | "role">>) =>
-    apiPut<Employee>(`/api/employees/${id}`, payload),
+  myProfile: () => apiGet<Employee>("/api/employees/me"),
+  updateEmployee: (
+    id: string,
+    payload: Partial<
+      Pick<
+        Employee,
+        "name" | "email" | "phone" | "department" | "designation" | "role" | "notification_email_enabled" | "notification_whatsapp_enabled"
+      >
+    >
+  ) => apiPut<Employee>(`/api/employees/${id}`, payload),
+  bulkSetEmployeeStatus: (employeeIds: string[], active: boolean) =>
+    apiPost<BulkStatusResult>("/api/employees/bulk-status", { employee_ids: employeeIds, active }),
   activateEmployee: (id: string) => apiPost<{ id: string; active: boolean }>(`/api/employees/${id}/activate`, {}),
   deactivateEmployee: (id: string) => apiPost<{ id: string; active: boolean }>(`/api/employees/${id}/deactivate`, {}),
 
@@ -339,9 +386,22 @@ export const api = {
     }
     return res.json();
   },
+  updateBreakdown: (
+    eventId: string,
+    payload: Partial<{ breakdown_at: string; resumed_at: string; cause: string; action_taken: string; resulted_in_scrap_or_replace: boolean }>
+  ) => apiPut<BreakdownEvent>(`/api/breakdowns/${eventId}`, payload),
 
-  checklists: () => apiGet<ChecklistTemplate[]>("/api/checklists"),
+  checklists: (includeInactive: boolean = false) =>
+    apiGet<ChecklistTemplate[]>(`/api/checklists?include_inactive=${includeInactive}`),
+  checklistTemplate: (id: string) => apiGet<ChecklistTemplate>(`/api/checklists/${id}`),
   checklistForMachine: (machineId: string) => apiGet<{ template_id: string | null; items: ChecklistItem[] }>(`/api/checklists/for-machine/${machineId}`),
+  createChecklistTemplate: (payload: ChecklistTemplateIn) => apiPost<ChecklistTemplate>("/api/checklists", payload),
+  updateChecklistTemplate: (id: string, payload: ChecklistTemplateUpdate) =>
+    apiPut<ChecklistTemplate>(`/api/checklists/${id}`, payload),
+  deactivateChecklistTemplate: (id: string) => apiPost<ChecklistTemplate>(`/api/checklists/${id}/deactivate`, {}),
+  restoreChecklistTemplate: (id: string) => apiPost<ChecklistTemplate>(`/api/checklists/${id}/restore`, {}),
+  assignChecklistTemplate: (templateId: string, machineId: string) =>
+    apiPost<{ machine_id: string; checklist_template_id: string }>(`/api/checklists/${templateId}/assign/${machineId}`, {}),
 
   monthlyReport: (month: string, financial_year: string) =>
     apiGet<MonthlyReport>(`/api/reports/monthly?month=${encodeURIComponent(month)}&financial_year=${encodeURIComponent(financial_year)}`),
@@ -378,6 +438,10 @@ export const api = {
     due_date?: string;
   }) => apiPost<WorkOrder>("/api/work-orders", payload),
   assignWorkOrder: (id: string, assigned_to: string) => apiPost<WorkOrder>(`/api/work-orders/${id}/assign`, { assigned_to }),
+  updateWorkOrder: (
+    id: string,
+    payload: Partial<{ title: string; description: string; priority: string; due_date: string | null }>
+  ) => apiPut<WorkOrder>(`/api/work-orders/${id}`, payload),
   updateWorkOrderStatus: (
     id: string,
     payload: {
@@ -405,6 +469,18 @@ export const api = {
     storage_location?: string;
     preferred_vendor?: string;
   }) => apiPost<SparePart>("/api/spare-parts", payload),
+  updateSparePart: (
+    id: string,
+    payload: Partial<{
+      name: string;
+      description: string;
+      unit: string;
+      minimum_stock: number;
+      unit_cost: number;
+      storage_location: string;
+      preferred_vendor: string;
+    }>
+  ) => apiPut<SparePart>(`/api/spare-parts/${id}`, payload),
   adjustStock: (id: string, payload: { change: number; reason?: string; work_order_id?: string }) =>
     apiPost<SparePart>(`/api/spare-parts/${id}/adjust`, payload),
 
