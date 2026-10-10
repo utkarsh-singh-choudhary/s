@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -13,6 +14,15 @@ router = APIRouter(prefix="/api/breakdowns", tags=["breakdowns"])
 
 LogRoles = require_roles(Role.TECHNICIAN, Role.SUPERVISOR, Role.MANAGER, Role.ADMIN)
 ViewRoles = require_roles(Role.ADMIN, Role.MANAGER, Role.SUPERVISOR, Role.VIEWER)
+EditRoles = require_roles(Role.SUPERVISOR, Role.MANAGER, Role.ADMIN)
+
+
+class BreakdownUpdateIn(BaseModel):
+    breakdown_at: datetime | None = None
+    resumed_at: datetime | None = None
+    cause: str | None = None
+    action_taken: str | None = None
+    resulted_in_scrap_or_replace: bool | None = None
 
 
 @router.post("")
@@ -55,6 +65,63 @@ def resolve_breakdown(
                  entity_id=event_id, actor_id=user.id,
                  new_value={"resumed_at": str(resumed_at), "resulted_in_scrap_or_replace": resulted_in_scrap_or_replace})
     return {"id": event.id, "resumed_at": str(resumed_at)}
+
+
+@router.put("/{event_id}")
+def update_breakdown(
+    event_id: str,
+    payload: BreakdownUpdateIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(EditRoles),
+):
+    """Correct a breakdown record after the fact (wrong cause, wrong timestamp, etc).
+    Supervisor/manager/admin only, since this can change MTBF/MTTR history."""
+    event = db.query(BreakdownEvent).get(event_id)
+    if not event:
+        raise HTTPException(404, "Breakdown event not found")
+
+    old_value = {
+        "breakdown_at": str(event.breakdown_at),
+        "resumed_at": str(event.resumed_at) if event.resumed_at else None,
+        "cause": event.cause,
+        "action_taken": event.action_taken,
+        "resulted_in_scrap_or_replace": event.resulted_in_scrap_or_replace,
+    }
+
+    if payload.breakdown_at is not None:
+        event.breakdown_at = payload.breakdown_at
+    if payload.resumed_at is not None:
+        event.resumed_at = payload.resumed_at
+    if payload.cause is not None:
+        event.cause = payload.cause
+    if payload.action_taken is not None:
+        event.action_taken = payload.action_taken
+    if payload.resulted_in_scrap_or_replace is not None:
+        event.resulted_in_scrap_or_replace = payload.resulted_in_scrap_or_replace
+
+    if event.resumed_at is not None and event.breakdown_at is not None and event.resumed_at < event.breakdown_at:
+        raise HTTPException(400, "Resumed time cannot be before the breakdown start time")
+
+    db.commit()
+    record_audit(db, action="BREAKDOWN_UPDATED", entity_type="BreakdownEvent", entity_id=event.id,
+                 actor_id=user.id, old_value=old_value,
+                 new_value={
+                     "breakdown_at": str(event.breakdown_at),
+                     "resumed_at": str(event.resumed_at) if event.resumed_at else None,
+                     "cause": event.cause,
+                     "action_taken": event.action_taken,
+                     "resulted_in_scrap_or_replace": event.resulted_in_scrap_or_replace,
+                 })
+    return {
+        "id": event.id,
+        "machine_id": event.machine_id,
+        "breakdown_at": event.breakdown_at,
+        "resumed_at": event.resumed_at,
+        "cause": event.cause,
+        "action_taken": event.action_taken,
+        "resulted_in_scrap_or_replace": event.resulted_in_scrap_or_replace,
+        "is_open": event.resumed_at is None,
+    }
 
 
 @router.get("")
