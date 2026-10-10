@@ -2,7 +2,15 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { getUser } from "@/lib/auth";
 import { api, BreakdownEvent, Machine, ReliabilityRow } from "@/lib/api";
+
+function toLocalInputValue(iso: string | null | undefined) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 export default function BreakdownsClient({
   initialBreakdowns,
@@ -22,6 +30,17 @@ export default function BreakdownsClient({
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [openOnly, setOpenOnly] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editState, setEditState] = useState<{
+    breakdown_at: string;
+    resumed_at: string;
+    cause: string;
+    action_taken: string;
+    resulted_in_scrap_or_replace: boolean;
+  } | null>(null);
+
+  const me = getUser();
+  const canEdit = me?.role === "SUPERVISOR" || me?.role === "MANAGER" || me?.role === "ADMIN";
 
   const machineById = new Map(machines.map((m) => [m.id, m]));
   const openCount = breakdowns.filter((b) => b.is_open).length;
@@ -73,6 +92,44 @@ export default function BreakdownsClient({
       await refresh();
     } catch (err: any) {
       setError(err.message || "Failed to resolve breakdown");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function startEdit(b: BreakdownEvent) {
+    setEditingId(b.id);
+    setEditState({
+      breakdown_at: toLocalInputValue(b.breakdown_at),
+      resumed_at: toLocalInputValue(b.resumed_at),
+      cause: b.cause || "",
+      action_taken: b.action_taken || "",
+      resulted_in_scrap_or_replace: b.resulted_in_scrap_or_replace,
+    });
+    setResolvingId(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditState(null);
+  }
+
+  async function saveEdit(eventId: string) {
+    if (!editState) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.updateBreakdown(eventId, {
+        breakdown_at: editState.breakdown_at ? new Date(editState.breakdown_at).toISOString() : undefined,
+        resumed_at: editState.resumed_at ? new Date(editState.resumed_at).toISOString() : undefined,
+        cause: editState.cause,
+        action_taken: editState.action_taken,
+        resulted_in_scrap_or_replace: editState.resulted_in_scrap_or_replace,
+      });
+      cancelEdit();
+      await refresh();
+    } catch (err: any) {
+      setError(err.message || "Failed to update breakdown");
     } finally {
       setSubmitting(false);
     }
@@ -198,6 +255,48 @@ export default function BreakdownsClient({
             <tbody>
               {filteredBreakdowns.map((b) => {
                 const machine = machineById.get(b.machine_id);
+                if (editingId === b.id && editState) {
+                  return (
+                    <tr key={b.id}>
+                      <td colSpan={6}>
+                        <div className="flex flex-wrap items-end gap-2 py-1">
+                          <div>
+                            <label className="text-xs text-muted block mb-0.5">Started</label>
+                            <input type="datetime-local" value={editState.breakdown_at}
+                              onChange={(e) => setEditState({ ...editState, breakdown_at: e.target.value })}
+                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs" />
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted block mb-0.5">Resumed</label>
+                            <input type="datetime-local" value={editState.resumed_at}
+                              onChange={(e) => setEditState({ ...editState, resumed_at: e.target.value })}
+                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs" />
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted block mb-0.5">Cause</label>
+                            <input value={editState.cause}
+                              onChange={(e) => setEditState({ ...editState, cause: e.target.value })}
+                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs w-32" />
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted block mb-0.5">Action taken</label>
+                            <input value={editState.action_taken}
+                              onChange={(e) => setEditState({ ...editState, action_taken: e.target.value })}
+                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs w-32" />
+                          </div>
+                          <label className="text-xs flex items-center gap-1">
+                            <input type="checkbox" checked={editState.resulted_in_scrap_or_replace}
+                              onChange={(e) => setEditState({ ...editState, resulted_in_scrap_or_replace: e.target.checked })} />
+                            Scrap
+                          </label>
+                          <button disabled={submitting} onClick={() => saveEdit(b.id)}
+                            className="text-xs text-good hover:underline disabled:opacity-50">Save</button>
+                          <button onClick={cancelEdit} className="text-xs text-muted hover:underline">Cancel</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
                 return (
                   <tr key={b.id}>
                     <td>
@@ -216,23 +315,30 @@ export default function BreakdownsClient({
                       )}
                     </td>
                     <td>
-                      {b.is_open && (
-                        resolvingId === b.id ? (
-                          <ResolveInline
-                            submitting={submitting}
-                            onCancel={() => setResolvingId(null)}
-                            onSubmit={(action, scrap) => submitResolve(b.id, action, scrap)}
-                          />
-                        ) : (
-                          <div className="flex items-center gap-2">
+                      {resolvingId === b.id ? (
+                        <ResolveInline
+                          submitting={submitting}
+                          onCancel={() => setResolvingId(null)}
+                          onSubmit={(action, scrap) => submitResolve(b.id, action, scrap)}
+                        />
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          {b.is_open && (
                             <button onClick={() => setResolvingId(b.id)} className="text-xs text-accent hover:underline">
                               Mark resolved
                             </button>
+                          )}
+                          {b.is_open && (
                             <Link href={`/work-orders?machine_id=${b.machine_id}`} className="text-xs text-muted hover:underline">
                               Raise WO
                             </Link>
-                          </div>
-                        )
+                          )}
+                          {canEdit && (
+                            <button onClick={() => startEdit(b)} className="text-xs text-muted hover:underline">
+                              Edit
+                            </button>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
