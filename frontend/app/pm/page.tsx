@@ -33,9 +33,10 @@ export default async function PMPlansPage({
   const page = Math.max(1, Number(searchParams.page) || 1);
   const PAGE_SIZE = 30;
 
-  const [plans, machines] = await Promise.all([
+  const [plans, machines, employees] = await Promise.all([
     safe(() => api.pmList(status ? { status } : {}), []),
     safe(() => api.machines(), []),
+    safe(() => api.employees(), []),
   ]);
 
   const sorted = [...plans].sort((a, b) => (b.planned_date || "").localeCompare(a.planned_date || ""));
@@ -60,7 +61,7 @@ export default async function PMPlansPage({
         ))}
       </div>
 
-      <PMPlansClient rows={pageRows} machines={machines} />
+      <PMPlansClient rows={pageRows} machines={machines} employees={employees} />
 
       {totalPages > 1 && (
         <div className="flex items-center gap-2 text-sm">
