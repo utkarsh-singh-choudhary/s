@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     WHATSAPP_API_URL: str = ""
     WHATSAPP_API_TOKEN: str = ""
 
+    # Shared secret that lets an external scheduler (GitHub Actions, cron-job.org)
+    # trigger the daily reminder job over HTTP. Leave empty to disable the endpoint.
+    CRON_SECRET: str = ""
+
     # Comma-separated list of management emails for the monthly report
     REPORT_RECIPIENTS: str = ""
 
