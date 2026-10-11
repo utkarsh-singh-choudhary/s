@@ -131,3 +131,69 @@ def send_pm_notification(
 
     db.commit()
     return log
+
+
+def send_cc_copy(
+    db: Session,
+    pm_plan_id: str,
+    cc_email: str,
+    notification_type: NotificationType,
+    subject: str,
+    body: str,
+    scheduled_date: date,
+    sent_to_names: list = None,
+) -> NotificationLog:
+    """
+    Sends a copy of a reminder to an extra (non-employee) address from the
+    admin-managed "reminder_cc_emails" setting. Always email, regardless of
+    the primary recipient's channel, and idempotent per
+    plan + type + date + address so a re-run of the daily job never
+    double-sends.
+    """
+    idempotency_key = f"{build_idempotency_key(pm_plan_id, notification_type, scheduled_date)}:cc:{cc_email.lower()}"
+
+    existing = db.query(NotificationLog).filter(
+        NotificationLog.idempotency_key == idempotency_key
+    ).first()
+    if existing and existing.delivery_status == DeliveryStatus.SENT:
+        return existing
+
+    log = existing or NotificationLog(
+        pm_plan_id=pm_plan_id,
+        recipient_id=None,
+        notification_type=notification_type,
+        channel=NotificationChannel.EMAIL,
+        idempotency_key=idempotency_key,
+        delivery_status=DeliveryStatus.PENDING,
+        retry_count=0,
+    )
+    if not existing:
+        db.add(log)
+        db.flush()
+
+    if not settings.NOTIFICATIONS_ENABLED:
+        log.delivery_status = DeliveryStatus.FAILED
+        log.error_message = "Notifications globally disabled via config."
+        db.commit()
+        return log
+
+    who = ", ".join(sent_to_names) if sent_to_names else "no assigned person (nobody is responsible for this machine yet)"
+    full_body = f"[Copy] This reminder was sent to: {who}\n\n{body}"
+
+    provider = get_active_email_provider()
+    log.provider = provider.name
+    result = provider.send(EmailMessage(to=cc_email, subject=f"[Copy] {subject}", body=full_body))
+
+    if result["success"]:
+        log.delivery_status = DeliveryStatus.SENT
+        log.sent_at = datetime.utcnow()
+        log.error_message = None
+    else:
+        log.retry_count += 1
+        log.error_message = result["error"]
+        log.delivery_status = (
+            DeliveryStatus.RETRYING if log.retry_count < MAX_RETRIES else DeliveryStatus.FAILED
+        )
+
+    db.commit()
+    return log
