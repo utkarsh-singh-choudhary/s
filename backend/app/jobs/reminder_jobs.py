@@ -10,14 +10,14 @@ simplicity; in the admin panel (Phase 4) these become DB-backed settings
 instead of constants.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from app.models.models import PMPlan, PMActual, Machine, MachineResponsibility, Employee, PMStatus, NotificationType
 from app.notifications import templates
-from app.notifications.notification_service import send_pm_notification
-from app.core.settings_service import get_setting
+from app.notifications.notification_service import send_pm_notification, send_cc_copy
+from app.core.settings_service import get_setting, set_setting
 from app.core.timeutils import today_local
 
 # Hardcoded fallbacks only — the live values used by the job are read from
@@ -120,10 +120,41 @@ def run_daily_reminder_job(db: Session, today: date = None):
                     results["escalated"] += 1
 
     db.commit()
+    # Remember when the job last ran so a catch-up after a sleep/restart knows
+    # whether today's run already happened.
+    set_setting(db, "last_reminder_run",
+                {"date": today.isoformat(), "at": datetime.utcnow().isoformat() + "Z", "results": results})
     return results
 
 
+def get_cc_emails(db: Session) -> list:
+    """Clean, de-duplicated list of extra reminder addresses from admin settings."""
+    raw = get_setting(db, "reminder_cc_emails", []) or []
+    if not isinstance(raw, list):
+        return []
+    seen, out = set(), []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        addr = item.strip().lower()
+        if "@" in addr and addr not in seen:
+            seen.add(addr)
+            out.append(addr)
+    return out
+
+
 def _notify(db, plan, machine, recipients, notif_type, subject, body, today):
+    for cc_email in get_cc_emails(db):
+        send_cc_copy(
+            db=db,
+            pm_plan_id=plan.id,
+            cc_email=cc_email,
+            notification_type=notif_type,
+            subject=subject,
+            body=body,
+            scheduled_date=today,
+            sent_to_names=[e.name for e in recipients],
+        )
     for emp in recipients:
         send_pm_notification(
             db=db,
