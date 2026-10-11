@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.jobs.scheduler import start_scheduler, scheduler
-from app.routers import machines, pm, import_router, health, auth, audit_router, employees, reports, admin_settings, breakdowns, checklists, work_orders, spare_parts
+from app.routers import machines, pm, import_router, health, auth, audit_router, employees, reports, admin_settings, internal_cron, breakdowns, checklists, work_orders, spare_parts
 
 
 def _validate_production_config() -> None:
@@ -84,3 +84,4 @@ app.include_router(checklists.router)
 app.include_router(work_orders.router)
 app.include_router(spare_parts.router)
 app.include_router(admin_settings.router)
+app.include_router(internal_cron.router)
