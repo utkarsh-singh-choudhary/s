@@ -12,6 +12,7 @@ Keys that the admin panel exposes (see app/routers/admin_settings.py):
     escalation_thresholds       list[{"days": int, "levels": [str]}] - overdue escalation ladder
     week_band_size_days         int   - locked week->date convention band width (default 7)
     week_start_offset_days      int   - day-of-month the W1 band starts on (default 1)
+    reminder_cc_emails          list[str] - extra addresses that get a copy of every reminder
 """
 from typing import Any
 
@@ -31,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "week_start_offset_days": 1,
     "labor_hour_cost": 300,
     "downtime_minute_cost": 20,
+    "reminder_cc_emails": [],
 }
 
 DESCRIPTIONS: dict[str, str] = {
@@ -41,6 +43,7 @@ DESCRIPTIONS: dict[str, str] = {
     "week_start_offset_days": "Day-of-month that band W1 starts on (normally 1).",
     "labor_hour_cost": "Cost per labor hour (currency units) used to estimate work-order labor cost.",
     "downtime_minute_cost": "Cost per minute of production downtime (currency units) used to estimate downtime cost.",
+    "reminder_cc_emails": "Extra email addresses (plant head, shared inbox, etc.) that receive a copy of every PM reminder and escalation, even if they are not employees.",
 }
 
 
