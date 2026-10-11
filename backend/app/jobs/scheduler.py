@@ -1,5 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from datetime import datetime, timedelta
 from sqlalchemy import text
 import pytz
 
@@ -7,6 +8,8 @@ from app.core.config import settings
 from app.core.database import SessionLocal, engine
 from app.jobs.reminder_jobs import run_daily_reminder_job
 from app.jobs.monthly_report_job import run_monthly_report_job
+from app.core.settings_service import get_setting
+from app.core.timeutils import today_local
 
 tz = pytz.timezone(settings.TIMEZONE)
 scheduler = BackgroundScheduler(timezone=tz)
@@ -55,6 +58,28 @@ def _daily_reminder_job():
     _run_with_advisory_lock(_LOCK_KEY_DAILY_REMINDER, "daily_pm_reminders", run)
 
 
+def _catchup_reminder_job():
+    """
+    Runs once shortly after every startup. If it is already past 08:00 local
+    time and today's reminder run hasn't happened (service was asleep or
+    restarting at 08:00), run it now. Safe: reminders are idempotent.
+    """
+    def run():
+        db = SessionLocal()
+        try:
+            now = datetime.now(tz)
+            if now.hour < 8:
+                return
+            last = get_setting(db, "last_reminder_run", {}) or {}
+            if last.get("date") == today_local().isoformat():
+                return
+            run_daily_reminder_job(db)
+        finally:
+            db.close()
+
+    _run_with_advisory_lock(_LOCK_KEY_DAILY_REMINDER, "daily_pm_reminders_catchup", run)
+
+
 def _monthly_report_job():
     def run():
         db = SessionLocal()
@@ -82,6 +107,13 @@ def start_scheduler():
         id="monthly_pm_report",
         replace_existing=True,
         misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        _catchup_reminder_job,
+        "date",
+        run_date=datetime.now(tz) + timedelta(seconds=45),
+        id="catchup_pm_reminders",
+        replace_existing=True,
     )
     scheduler.start()
     return scheduler
