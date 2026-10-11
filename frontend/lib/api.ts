@@ -73,6 +73,20 @@ export type AppSettingRow = {
   description: string;
 };
 
+export type ReminderReadiness = {
+  notifications_enabled: boolean;
+  email_provider: string;
+  email_provider_configured: boolean;
+  active_employees: number;
+  employees_reachable_by_email: number;
+  open_plan_machines: number;
+  machines_without_recipient: number;
+  machines_without_recipient_list: { machine_id: string; machine_number: string | null; machine_name: string | null }[];
+  cc_emails: string[];
+  last_reminder_run: { date: string; at: string; results: Record<string, number> } | null;
+  external_trigger_enabled: boolean;
+};
+
 export type Employee = {
   id: string;
   employee_code?: string;
@@ -331,6 +345,9 @@ export const api = {
 
   adminSettings: () => apiGet<AppSettingRow[]>("/api/admin/settings"),
   updateAdminSetting: (key: string, value: any) => apiPut<{ key: string; value: any }>(`/api/admin/settings/${key}`, { value }),
+  reminderReadiness: () => apiGet<ReminderReadiness>("/api/admin/settings/reminder-readiness"),
+  runRemindersNow: () =>
+    apiPost<{ success: boolean; results: Record<string, number> }>("/api/admin/settings/run-reminders-now", {}),
   sendTestEmail: (to: string) =>
     apiPost<{ success: boolean; provider?: string; error?: string | null }>("/api/admin/settings/test-email", { to }),
 
