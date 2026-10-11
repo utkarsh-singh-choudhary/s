@@ -1,4 +1,4 @@
-# Preventive Maintenance Automation System — Phase 1
+# Preventive Maintenance Automation System 
 
 Built from the actual structure of `Master_List_of_Plant_Machinery_SG_LLP_PM_PD_Plan_FY_26-27_updated.xlsx`.
 
@@ -50,9 +50,7 @@ Built from the actual structure of `Master_List_of_Plant_Machinery_SG_LLP_PM_PD_
   the previous month's report and emails a summary to `REPORT_RECIPIENTS`
   (comma-separated in `.env`) via whichever email provider is active.
 
-## Not yet implemented (next phases)
 
-- WhatsApp/SMS providers — Phase 5
 
 ## Phase 4 additions (this update)
 
