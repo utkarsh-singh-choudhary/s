@@ -1,0 +1,23 @@
+name: Daily PM reminders
+
+# Calls the backend once a day at 08:00 IST (02:30 UTC). This wakes the Render
+# service if it is asleep and runs the reminder job. The job is idempotent, so
+# a repeat or manual run never sends duplicates.
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger daily reminder job
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --max-time 180 --retry 4 --retry-delay 30 --retry-all-errors \
+            -X POST "$BACKEND_URL/api/internal/run-daily-reminders" \
+            -H "X-Cron-Secret: $CRON_SECRET"
