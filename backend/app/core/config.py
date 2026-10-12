@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     API_URL: str = "http://localhost:8000"
     ENV: str = "development"
 
-    EMAIL_PROVIDER: str = "smtp_generic"  # m365 | gmail | smtp_generic
+    EMAIL_PROVIDER: str = "smtp_generic"  # m365 | gmail | smtp_generic | brevo | gmail_script
     NOTIFICATIONS_ENABLED: bool = True
 
     MS365_TENANT_ID: str = ""
@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     SMTP_USERNAME: str = ""
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = ""
+
+    # Gmail via Google Apps Script web app (HTTPS; no OAuth client needed)
+    GMAIL_SCRIPT_URL: str = ""
+    GMAIL_SCRIPT_SECRET: str = ""
+
+    # Brevo HTTPS email API (works on hosts that block SMTP ports, e.g. Render free tier)
+    BREVO_API_KEY: str = ""
 
     WHATSAPP_API_URL: str = ""
     WHATSAPP_API_TOKEN: str = ""
