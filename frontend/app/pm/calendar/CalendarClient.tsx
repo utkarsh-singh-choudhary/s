@@ -1,5 +1,6 @@
 "use client";
 
+import { effectiveStatus } from "@/lib/pmStatus";
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Machine, PMPlan } from "@/lib/api";
@@ -146,7 +147,7 @@ export default function CalendarClient({ plans, machines }: { plans: PMPlan[]; m
                       </Link>
                     </td>
                     <td>{p.month}</td>
-                    <td><StatusPill status={p.status} /></td>
+                    <td><StatusPill status={effectiveStatus(p.status, p.planned_date)} /></td>
                     <td>
                       {p.status !== "COMPLETED" && p.status !== "CANCELLED" && (
                         <Link href={`/pm/${p.id}/complete`} className="text-xs text-accent hover:underline">
