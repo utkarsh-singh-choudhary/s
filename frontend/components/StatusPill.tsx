@@ -7,6 +7,8 @@ const COLORS: Record<string, string> = {
   OVERDUE: "bg-red-50 text-bad",
   MISSED: "bg-red-50 text-bad",
   CANCELLED: "bg-gray-100 text-muted",
+  ACTIVE: "bg-green-50 text-good",
+  INACTIVE: "bg-gray-100 text-muted",
 };
 
 export function StatusPill({ status }: { status: string }) {
