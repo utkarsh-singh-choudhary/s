@@ -45,6 +45,25 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<BulkStatusResult | null>(null);
 
+  const [resetPw, setResetPw] = useState("");
+  const [resetMsg, setResetMsg] = useState<{ ok: boolean; message: string } | null>(null);
+
+  async function handleResetPassword(id: string) {
+    setResetMsg(null);
+    if (resetPw.length < 8) {
+      setResetMsg({ ok: false, message: "Password must be at least 8 characters." });
+      return;
+    }
+    if (!confirm("Set this employee's password to the value you entered? They will need it to sign in.")) return;
+    try {
+      await api.resetEmployeePassword(id, resetPw);
+      setResetPw("");
+      setResetMsg({ ok: true, message: "Password updated. Share it with the employee securely." });
+    } catch (err: any) {
+      setResetMsg({ ok: false, message: err.message || "Could not reset password" });
+    }
+  }
+
   const [showAdd, setShowAdd] = useState(false);
   const [adding, setAdding] = useState(false);
   const [addForm, setAddForm] = useState({
@@ -116,6 +135,8 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
 
   function startEdit(e: Employee) {
     setError(null);
+    setResetPw("");
+    setResetMsg(null);
     setOpenId(e.id);
     setEdit(toEditState(e));
   }
@@ -392,6 +413,27 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
                               </>
                             )}
                           </div>
+                          {isAdmin && (
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                placeholder="New password (min 8)"
+                                value={resetPw}
+                                onChange={(ev) => setResetPw(ev.target.value)}
+                                className="border border-border rounded-sm px-2 py-1 text-sm"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleResetPassword(e.id)}
+                                className="text-sm px-3 py-1.5 rounded-sm border border-border hover:bg-surface"
+                              >
+                                Reset password
+                              </button>
+                              {resetMsg && (
+                                <span className={`text-xs ${resetMsg.ok ? "text-good" : "text-bad"}`}>{resetMsg.message}</span>
+                              )}
+                            </div>
+                          )}
                           <div className="mt-3 flex gap-2">
                             <button
                               disabled={busyId === e.id}
