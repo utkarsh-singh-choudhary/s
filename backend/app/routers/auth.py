@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.core.database import get_db
-from app.core.security import verify_password, create_access_token
+from app.core.security import verify_password, create_access_token, hash_password
+from app.core.auth import get_current_user
 from app.core.audit import record_audit
 from app.core.rate_limit import check_login_rate_limit, record_login_attempt
 from app.models.models import Employee
@@ -40,3 +41,28 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Ses
     record_audit(db, action="LOGIN", entity_type="Employee", entity_id=user.id, actor_id=user.id)
 
     return LoginOut(access_token=token, role=user.role.value, name=user.name, employee_id=user.id)
+
+
+MIN_PASSWORD_LENGTH = 8
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password")
+def change_password(payload: ChangePasswordIn, db: Session = Depends(get_db),
+                    user: Employee = Depends(get_current_user)):
+    if not user.hashed_password or not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current password is incorrect")
+    if len(payload.new_password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"New password must be at least {MIN_PASSWORD_LENGTH} characters")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "New password must be different from the current one")
+
+    user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    record_audit(db, action="PASSWORD_CHANGED", entity_type="Employee", entity_id=user.id, actor_id=user.id)
+    return {"success": True}
