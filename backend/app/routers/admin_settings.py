@@ -109,6 +109,10 @@ def reminder_readiness(db: Session = Depends(get_db), _user: Employee = Depends(
     if provider == "smtp_generic":
         provider_ok = bool(app_settings.SMTP_HOST and app_settings.SMTP_USERNAME
                            and app_settings.SMTP_PASSWORD and app_settings.EMAIL_FROM)
+    elif provider == "gmail_script":
+        provider_ok = bool(app_settings.GMAIL_SCRIPT_URL and app_settings.GMAIL_SCRIPT_SECRET)
+    elif provider == "brevo":
+        provider_ok = bool(app_settings.BREVO_API_KEY and app_settings.EMAIL_FROM)
     elif provider == "gmail":
         provider_ok = bool(app_settings.GMAIL_CLIENT_ID and app_settings.GMAIL_CLIENT_SECRET
                            and app_settings.GMAIL_REFRESH_TOKEN and app_settings.GMAIL_SENDER_ADDRESS)
