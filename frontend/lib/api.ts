@@ -1,4 +1,4 @@
-import { getToken } from "./auth";
+import { getToken, logout } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -271,8 +271,17 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// An expired/invalid login in the browser: clear it and go to the sign-in page
+// instead of showing a raw "API error 401".
+function handleUnauthorized(res: Response) {
+  if (res.status === 401 && typeof window !== "undefined") {
+    logout();
+  }
+}
+
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: { ...(await authHeaders()) } });
+  handleUnauthorized(res);
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
   return res.json();
 }
@@ -283,6 +292,7 @@ async function apiPut<T>(path: string, body: any): Promise<T> {
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify(body),
   });
+  handleUnauthorized(res);
   if (!res.ok) {
     const detail = await res.json().catch(() => null);
     throw new Error(detail?.detail || `API error ${res.status}: ${path}`);
@@ -296,6 +306,7 @@ async function apiPost<T>(path: string, body: any): Promise<T> {
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify(body),
   });
+  handleUnauthorized(res);
   if (!res.ok) {
     const detail = await res.json().catch(() => null);
     throw new Error(detail?.detail || `API error ${res.status}: ${path}`);
