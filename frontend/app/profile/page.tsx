@@ -9,6 +9,32 @@ export default function ProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState<{ ok: boolean; message: string } | null>(null);
+
+  async function handleChangePassword(ev: React.FormEvent) {
+    ev.preventDefault();
+    setPwMsg(null);
+    if (pw.next.length < 8) {
+      setPwMsg({ ok: false, message: "New password must be at least 8 characters." });
+      return;
+    }
+    if (pw.next !== pw.confirm) {
+      setPwMsg({ ok: false, message: "New password and confirmation do not match." });
+      return;
+    }
+    setPwBusy(true);
+    try {
+      await api.changePassword(pw.current, pw.next);
+      setPw({ current: "", next: "", confirm: "" });
+      setPwMsg({ ok: true, message: "Password changed. Use the new password next time you sign in." });
+    } catch (err: any) {
+      setPwMsg({ ok: false, message: err.message || "Could not change password" });
+    } finally {
+      setPwBusy(false);
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -81,6 +107,24 @@ export default function ProfilePage() {
         </label>
         {saved && !saving && <div className="text-xs text-good">Saved.</div>}
       </div>
+
+      <form onSubmit={handleChangePassword} className="kpi-card space-y-2">
+        <div className="font-medium text-sm">Change Password</div>
+        <input type="password" required autoComplete="current-password" placeholder="Current password"
+          value={pw.current} onChange={(e) => setPw({ ...pw, current: e.target.value })}
+          className="border border-border rounded-sm px-3 py-1.5 text-sm w-full" />
+        <input type="password" required autoComplete="new-password" minLength={8} placeholder="New password (min 8 characters)"
+          value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })}
+          className="border border-border rounded-sm px-3 py-1.5 text-sm w-full" />
+        <input type="password" required autoComplete="new-password" placeholder="Confirm new password"
+          value={pw.confirm} onChange={(e) => setPw({ ...pw, confirm: e.target.value })}
+          className="border border-border rounded-sm px-3 py-1.5 text-sm w-full" />
+        <button type="submit" disabled={pwBusy}
+          className="bg-ink text-white text-xs rounded-sm px-3 py-2 hover:opacity-90 disabled:opacity-50">
+          {pwBusy ? "Changing…" : "Change password"}
+        </button>
+        {pwMsg && <div className={`text-xs ${pwMsg.ok ? "text-good" : "text-bad"}`}>{pwMsg.message}</div>}
+      </form>
     </div>
   );
 }
