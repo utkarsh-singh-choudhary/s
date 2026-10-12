@@ -40,6 +40,10 @@ class EmployeeUpdate(BaseModel):
     notification_whatsapp_enabled: bool | None = None
 
 
+class ResetPasswordIn(BaseModel):
+    new_password: str
+
+
 class BulkStatusIn(BaseModel):
     employee_ids: list[str]
     active: bool
@@ -95,6 +99,21 @@ def create_employee(payload: EmployeeIn, db: Session = Depends(get_db), user=Dep
     record_audit(db, action="EMPLOYEE_CREATED", entity_type="Employee", entity_id=emp.id,
                  actor_id=user.id, new_value={"email": emp.email, "role": emp.role.value})
     return {"id": emp.id, "name": emp.name, "email": emp.email, "role": emp.role}
+
+
+@router.post("/{employee_id}/reset-password")
+def reset_employee_password(employee_id: str, payload: ResetPasswordIn, db: Session = Depends(get_db),
+                            user: Employee = Depends(AdminOnly)):
+    emp = db.query(Employee).filter(Employee.id == employee_id).first()
+    if not emp:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Employee not found")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Password must be at least 8 characters")
+    emp.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    record_audit(db, action="PASSWORD_RESET_BY_ADMIN", entity_type="Employee", entity_id=emp.id,
+                 actor_id=user.id, new_value={"employee": emp.email})
+    return {"success": True}
 
 
 @router.put("/{employee_id}")
