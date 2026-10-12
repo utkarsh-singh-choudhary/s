@@ -20,12 +20,16 @@ from app.notifications.base import EmailMessage
 from app.notifications.providers.m365_provider import Microsoft365Provider
 from app.notifications.providers.gmail_provider import GmailProvider
 from app.notifications.providers.smtp_provider import SmtpGenericProvider
+from app.notifications.providers.brevo_provider import BrevoProvider
+from app.notifications.providers.gmail_script_provider import GmailScriptProvider
 from app.notifications.providers.whatsapp_provider import WhatsAppProvider
 
 PROVIDER_REGISTRY = {
     "m365": Microsoft365Provider,
     "gmail": GmailProvider,
     "smtp_generic": SmtpGenericProvider,
+    "brevo": BrevoProvider,
+    "gmail_script": GmailScriptProvider,
 }
 
 MAX_RETRIES = 3
