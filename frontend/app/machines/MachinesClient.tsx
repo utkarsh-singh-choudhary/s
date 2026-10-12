@@ -338,7 +338,7 @@ export default function MachinesClient({ machines, checklists }: { machines: Mac
                     <td>{m.machine_name} {m.critical && <span className="text-bad">*</span>}</td>
                     <td>{m.manufacturer || "—"}</td>
                     <td>{m.location || "—"}</td>
-                    <td><StatusPill status={m.active ? "PLANNED" : "CANCELLED"} /></td>
+                    <td><StatusPill status={m.active ? "ACTIVE" : "INACTIVE"} /></td>
                     {canManage && (
                       <td className="whitespace-nowrap space-x-2">
                         <button
