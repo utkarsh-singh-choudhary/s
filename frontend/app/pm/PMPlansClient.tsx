@@ -1,5 +1,6 @@
 "use client";
 
+import { effectiveStatus } from "@/lib/pmStatus";
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -208,7 +209,7 @@ export default function PMPlansClient({ rows, machines, employees }: { rows: PMP
                     <td>{p.assigned_to ? employeeById.get(p.assigned_to)?.name || p.assigned_to.slice(0, 8) : "—"}</td>
                     <td>{p.month}</td>
                     <td>{p.financial_year}</td>
-                    <td><StatusPill status={p.status} /></td>
+                    <td><StatusPill status={effectiveStatus(p.status, p.planned_date)} /></td>
                     <td>
                       <div className="flex items-center gap-2">
                         {p.status !== "COMPLETED" && p.status !== "CANCELLED" && (
