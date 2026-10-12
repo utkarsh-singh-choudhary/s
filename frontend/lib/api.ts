@@ -352,6 +352,15 @@ export const api = {
     apiPost<{ success: boolean; provider?: string; error?: string | null }>("/api/admin/settings/test-email", { to }),
 
   employees: () => apiGet<Employee[]>("/api/employees"),
+  createEmployee: (payload: {
+    name: string;
+    email: string;
+    password: string;
+    role: string;
+    department?: string;
+    designation?: string;
+    phone?: string;
+  }) => apiPost<{ id: string; name: string; email: string; role: string }>("/api/employees", payload),
   myProfile: () => apiGet<Employee>("/api/employees/me"),
   updateEmployee: (
     id: string,
