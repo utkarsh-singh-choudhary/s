@@ -2,6 +2,7 @@ import { api, PMPlan } from "@/lib/api";
 import { KpiCard } from "@/components/KpiCard";
 import { StatusPill } from "@/components/StatusPill";
 import Link from "next/link";
+import { effectiveStatus, daysOverdue } from "@/lib/pmStatus";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,11 @@ export default async function DashboardPage() {
     safe(() => api.pmOverdue(), []),
     safe(() => api.pmAll(), []),
   ]);
+
+  const machineLabels: Record<string, string> = {};
+  machines.forEach((m) => {
+    machineLabels[m.id] = `${m.machine_number} — ${m.machine_name}`;
+  });
 
   const completed = allPlans.filter((p) => p.status === "COMPLETED").length;
   const planned = allPlans.length;
@@ -42,8 +48,8 @@ export default async function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <PlanTable title="Upcoming Maintenance" plans={upcoming} emptyText="No PM due in the next 14 days." />
-        <PlanTable title="Overdue Maintenance" plans={overdue} emptyText="Nothing overdue." highlightOverdue />
+        <PlanTable title="Upcoming Maintenance" plans={upcoming} machineLabels={machineLabels} emptyText="No PM due in the next 14 days." />
+        <PlanTable title="Overdue Maintenance" plans={overdue} machineLabels={machineLabels} emptyText="Nothing overdue." highlightOverdue />
       </div>
     </div>
   );
@@ -54,11 +60,13 @@ function PlanTable({
   plans,
   emptyText,
   highlightOverdue,
+  machineLabels,
 }: {
   title: string;
   plans: PMPlan[];
   emptyText: string;
   highlightOverdue?: boolean;
+  machineLabels: Record<string, string>;
 }) {
   return (
     <div className="kpi-card !p-0 overflow-hidden">
@@ -71,6 +79,7 @@ function PlanTable({
             <tr>
               <th>Machine</th>
               <th>Planned Date</th>
+              {highlightOverdue && <th>Days Overdue</th>}
               <th>Month</th>
               <th>Status</th>
               <th></th>
@@ -79,11 +88,16 @@ function PlanTable({
           <tbody>
             {plans.map((p) => (
               <tr key={p.id}>
-                <td className="font-mono text-xs">{p.machine_id.slice(0, 8)}</td>
+                <td className="text-sm">
+                  <Link href={`/machines/${p.machine_id}`} className="text-accent hover:underline">
+                    {machineLabels[p.machine_id] || p.machine_id.slice(0, 8)}
+                  </Link>
+                </td>
                 <td>{p.planned_date || "—"}</td>
+                {highlightOverdue && <td className="text-bad font-medium">{daysOverdue(p.planned_date)}</td>}
                 <td>{p.month}</td>
                 <td>
-                  <StatusPill status={highlightOverdue ? "OVERDUE" : p.status} />
+                  <StatusPill status={highlightOverdue ? "OVERDUE" : effectiveStatus(p.status, p.planned_date)} />
                 </td>
                 <td>
                   {p.status !== "COMPLETED" && p.status !== "CANCELLED" && (
