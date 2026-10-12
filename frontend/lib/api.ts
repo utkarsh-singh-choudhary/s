@@ -361,6 +361,10 @@ export const api = {
     designation?: string;
     phone?: string;
   }) => apiPost<{ id: string; name: string; email: string; role: string }>("/api/employees", payload),
+  changePassword: (current_password: string, new_password: string) =>
+    apiPost<{ success: boolean }>("/api/auth/change-password", { current_password, new_password }),
+  resetEmployeePassword: (id: string, new_password: string) =>
+    apiPost<{ success: boolean }>(`/api/employees/${id}/reset-password`, { new_password }),
   myProfile: () => apiGet<Employee>("/api/employees/me"),
   updateEmployee: (
     id: string,
