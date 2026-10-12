@@ -45,6 +45,38 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<BulkStatusResult | null>(null);
 
+  const [showAdd, setShowAdd] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [addForm, setAddForm] = useState({
+    name: "", email: "", password: "", role: "TECHNICIAN", department: "", designation: "", phone: "",
+  });
+
+  async function handleAdd(ev: React.FormEvent) {
+    ev.preventDefault();
+    setAdding(true);
+    setError(null);
+    try {
+      await api.createEmployee({
+        name: addForm.name.trim(),
+        email: addForm.email.trim(),
+        password: addForm.password,
+        role: addForm.role,
+        department: addForm.department.trim() || undefined,
+        designation: addForm.designation.trim() || undefined,
+        phone: addForm.phone.trim() || undefined,
+      });
+      setAddForm({ name: "", email: "", password: "", role: "TECHNICIAN", department: "", designation: "", phone: "" });
+      setShowAdd(false);
+      const fresh = await api.employees();
+      setEmployees(fresh);
+      router.refresh();
+    } catch (err: any) {
+      setError(err.message || "Could not create employee");
+    } finally {
+      setAdding(false);
+    }
+  }
+
   const me = getUser();
   const isAdmin = me?.role === "ADMIN";
 
@@ -141,6 +173,51 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
         <p className="text-sm text-muted">{employees.length} employee{employees.length === 1 ? "" : "s"}.</p>
       </div>
 
+      {isAdmin && (
+        <div>
+          <button
+            onClick={() => setShowAdd((v) => !v)}
+            className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90"
+          >
+            {showAdd ? "Cancel" : "+ Add employee"}
+          </button>
+        </div>
+      )}
+
+      {isAdmin && showAdd && (
+        <form onSubmit={handleAdd} className="rounded-sm border border-border bg-panel p-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+          <input required placeholder="Full name" value={addForm.name}
+            onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
+            className="border border-border rounded-sm px-3 py-1.5 text-sm" />
+          <input required type="email" placeholder="Email (used for reminders)" value={addForm.email}
+            onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
+            className="border border-border rounded-sm px-3 py-1.5 text-sm" />
+          <input required type="text" minLength={6} placeholder="Temporary password (min 6)" value={addForm.password}
+            onChange={(e) => setAddForm({ ...addForm, password: e.target.value })}
+            className="border border-border rounded-sm px-3 py-1.5 text-sm" />
+          <select value={addForm.role} onChange={(e) => setAddForm({ ...addForm, role: e.target.value })}
+            className="border border-border rounded-sm px-3 py-1.5 text-sm">
+            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <input placeholder="Department" value={addForm.department}
+            onChange={(e) => setAddForm({ ...addForm, department: e.target.value })}
+            className="border border-border rounded-sm px-3 py-1.5 text-sm" />
+          <input placeholder="Designation" value={addForm.designation}
+            onChange={(e) => setAddForm({ ...addForm, designation: e.target.value })}
+            className="border border-border rounded-sm px-3 py-1.5 text-sm" />
+          <input placeholder="Phone (for WhatsApp)" value={addForm.phone}
+            onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
+            className="border border-border rounded-sm px-3 py-1.5 text-sm" />
+          <div className="md:col-span-2 flex items-center gap-2">
+            <button type="submit" disabled={adding}
+              className="text-sm px-3 py-1.5 rounded-sm bg-ink text-white hover:opacity-90 disabled:opacity-50">
+              {adding ? "Creating…" : "Create employee"}
+            </button>
+            <span className="text-xs text-muted">Share the temporary password with them securely.</span>
+          </div>
+        </form>
+      )}
+
       {error && <div className="text-sm text-bad">{error}</div>}
 
       {isAdmin && selected.size > 0 && (
@@ -233,7 +310,7 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
                       <td>{e.department || "—"}</td>
                       <td>{e.email || "—"}</td>
                       <td>{e.phone || "—"}</td>
-                      <td><StatusPill status={e.active ? "PLANNED" : "CANCELLED"} /></td>
+                      <td><StatusPill status={e.active ? "ACTIVE" : "INACTIVE"} /></td>
                       <td className="whitespace-nowrap space-x-2">
                         {canEdit(e) && (
                           <button
