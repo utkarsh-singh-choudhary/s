@@ -68,6 +68,7 @@ def send_pm_notification(
     scheduled_date: date,
     cc: list = None,
     employee=None,
+    idempotency_key_override: str = None,
 ) -> NotificationLog:
     """
     `employee` (optional, but pass it from new call sites) lets this pick
@@ -75,7 +76,7 @@ def send_pm_notification(
     behaves exactly as before and always sends email, so existing callers
     that don't have the Employee object handy keep working unchanged.
     """
-    idempotency_key = build_idempotency_key(pm_plan_id, notification_type, scheduled_date)
+    idempotency_key = idempotency_key_override or build_idempotency_key(pm_plan_id, notification_type, scheduled_date)
 
     existing = db.query(NotificationLog).filter(
         NotificationLog.idempotency_key == idempotency_key
@@ -146,6 +147,7 @@ def send_cc_copy(
     body: str,
     scheduled_date: date,
     sent_to_names: list = None,
+    idempotency_key_override: str = None,
 ) -> NotificationLog:
     """
     Sends a copy of a reminder to an extra (non-employee) address from the
@@ -154,7 +156,9 @@ def send_cc_copy(
     plan + type + date + address so a re-run of the daily job never
     double-sends.
     """
-    idempotency_key = f"{build_idempotency_key(pm_plan_id, notification_type, scheduled_date)}:cc:{cc_email.lower()}"
+    idempotency_key = idempotency_key_override or (
+        f"{build_idempotency_key(pm_plan_id, notification_type, scheduled_date)}:cc:{cc_email.lower()}"
+    )
 
     existing = db.query(NotificationLog).filter(
         NotificationLog.idempotency_key == idempotency_key
