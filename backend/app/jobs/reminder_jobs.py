@@ -10,6 +10,7 @@ simplicity; in the admin panel (Phase 4) these become DB-backed settings
 instead of constants.
 """
 
+import hashlib
 from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
@@ -60,6 +61,8 @@ def run_daily_reminder_job(db: Session, today: date = None):
         [{"days": d, "levels": levels} for d, levels in ESCALATION_LEVELS],
     )
 
+    queue = []  # reminders are collected, then sent as ONE digest per person
+
     open_plans = db.query(PMPlan).filter(
         PMPlan.status.notin_([PMStatus.COMPLETED, PMStatus.CANCELLED, PMStatus.PENDING_SUPERVISOR_CONFIRMATION]),
         PMPlan.planned_date.isnot(None),
@@ -76,7 +79,7 @@ def run_daily_reminder_job(db: Session, today: date = None):
             continue  # already completed - nothing to remind
 
         if days_diff == reminder_days_before:
-            _notify(db, plan, machine, recipients, NotificationType.UPCOMING_REMINDER,
+            _enqueue(queue, plan, machine, recipients, NotificationType.UPCOMING_REMINDER,
                     "PM Reminder - Upcoming",
                     templates.upcoming_reminder(machine.machine_name, machine.machine_number,
                                                  plan.planned_date, machine.location, days_diff),
@@ -84,14 +87,14 @@ def run_daily_reminder_job(db: Session, today: date = None):
             results["upcoming"] += 1
 
         elif days_diff == due_tomorrow_days_before:
-            _notify(db, plan, machine, recipients, NotificationType.DUE_REMINDER,
+            _enqueue(queue, plan, machine, recipients, NotificationType.DUE_REMINDER,
                     "PM Due Tomorrow",
                     templates.due_tomorrow_reminder(machine.machine_name, machine.machine_number, plan.planned_date),
                     today)
             results["due_tomorrow"] += 1
 
         elif days_diff == 0:
-            _notify(db, plan, machine, recipients, NotificationType.DUE_REMINDER,
+            _enqueue(queue, plan, machine, recipients, NotificationType.DUE_REMINDER,
                     "PM Due Today",
                     templates.due_today_not_updated(machine.machine_name, machine.machine_number, plan.planned_date),
                     today)
@@ -101,7 +104,7 @@ def run_daily_reminder_job(db: Session, today: date = None):
         elif days_diff < 0:
             days_overdue = -days_diff
             plan.status = PMStatus.OVERDUE
-            _notify(db, plan, machine, recipients, NotificationType.OVERDUE_REMINDER,
+            _enqueue(queue, plan, machine, recipients, NotificationType.OVERDUE_REMINDER,
                     "OVERDUE Preventive Maintenance",
                     templates.overdue_reminder(machine.machine_name, machine.machine_number,
                                                 plan.planned_date, days_overdue),
@@ -112,13 +115,14 @@ def run_daily_reminder_job(db: Session, today: date = None):
                 threshold, levels = entry["days"], entry["levels"]
                 if days_overdue == threshold:
                     esc_recipients = _get_responsible_employees(db, plan.machine_id, tuple(levels))
-                    _notify(db, plan, machine, esc_recipients, NotificationType.ESCALATION,
+                    _enqueue(queue, plan, machine, esc_recipients, NotificationType.ESCALATION,
                             f"PM Escalation - {days_overdue} days overdue",
                             templates.escalation_notice(machine.machine_name, machine.machine_number,
                                                          plan.planned_date, days_overdue, len(levels)),
                             today)
                     results["escalated"] += 1
 
+    _flush_queue(db, queue, today)
     db.commit()
     # Remember when the job last ran so a catch-up after a sleep/restart knows
     # whether today's run already happened.
@@ -143,22 +147,60 @@ def get_cc_emails(db: Session) -> list:
     return out
 
 
-def _notify(db, plan, machine, recipients, notif_type, subject, body, today):
-    for cc_email in get_cc_emails(db):
-        send_cc_copy(
-            db=db,
-            pm_plan_id=plan.id,
-            cc_email=cc_email,
-            notification_type=notif_type,
-            subject=subject,
-            body=body,
-            scheduled_date=today,
-            sent_to_names=[e.name for e in recipients],
-        )
-    for emp in recipients:
+MAX_ITEMS_PER_DIGEST = 30
+
+
+def _enqueue(queue, plan, machine, recipients, notif_type, subject, body, today):
+    queue.append({
+        "plan": plan, "machine": machine, "recipients": recipients,
+        "type": notif_type, "subject": subject, "body": body,
+    })
+
+
+def _digest_key(prefix: str, notif_type, subject: str, today, who: str) -> str:
+    sub_hash = hashlib.md5(subject.encode()).hexdigest()[:8]
+    return f"{prefix}:{who}:{notif_type.value}:{sub_hash}:{today.isoformat()}"
+
+
+def _build_digest(items, subject, today):
+    """One email/message listing every machine instead of one message per machine."""
+    items = sorted(items, key=lambda i: (i["plan"].planned_date or today, i["machine"].machine_number or ""))
+    if len(items) == 1:
+        return subject, items[0]["body"]
+    shown = items[:MAX_ITEMS_PER_DIGEST]
+    parts = [f"{len(items)} machines need attention:"]
+    parts += [i["body"] for i in shown]
+    if len(items) > len(shown):
+        parts.append(f"...and {len(items) - len(shown)} more. Open the PM dashboard to see the full list.")
+    return f"{subject} ({len(items)} machines)", "\n\n----------\n\n".join(parts)
+
+
+def _flush_queue(db, queue, today):
+    """
+    Sends at most ONE message per person per reminder kind per day (and one
+    copy per CC address). Sending one email per overdue plan would send
+    hundreds of emails a day and exhaust mail quotas (Gmail allows ~100).
+    """
+    if not queue:
+        return
+
+    # Group by (kind, subject) so "Due Tomorrow" and "Due Today" stay separate emails.
+    by_person = {}
+    by_kind = {}
+    for item in queue:
+        kind = (item["type"], item["subject"])
+        by_kind.setdefault(kind, {})[item["plan"].id] = item
+        for emp in item["recipients"]:
+            by_person.setdefault((emp.id, kind), {"emp": emp, "items": {}})["items"][item["plan"].id] = item
+
+    for (emp_id, kind), grp in by_person.items():
+        notif_type, base_subject = kind
+        items = list(grp["items"].values())
+        subject, body = _build_digest(items, base_subject, today)
+        emp = grp["emp"]
         send_pm_notification(
             db=db,
-            pm_plan_id=plan.id,
+            pm_plan_id=items[0]["plan"].id,
             recipient_email=emp.email,
             recipient_id=emp.id,
             notification_type=notif_type,
@@ -166,4 +208,25 @@ def _notify(db, plan, machine, recipients, notif_type, subject, body, today):
             body=body,
             scheduled_date=today,
             employee=emp,
+            idempotency_key_override=None if len(items) == 1 else _digest_key("digest", notif_type, base_subject, today, emp.id),
         )
+
+    cc_emails = get_cc_emails(db)
+    if not cc_emails:
+        return
+    for (notif_type, base_subject), plan_items in by_kind.items():
+        items = list(plan_items.values())
+        subject, body = _build_digest(items, base_subject, today)
+        names = sorted({e.name for i in items for e in i["recipients"]})
+        for cc_email in cc_emails:
+            send_cc_copy(
+                db=db,
+                pm_plan_id=items[0]["plan"].id,
+                cc_email=cc_email,
+                notification_type=notif_type,
+                subject=subject,
+                body=body,
+                scheduled_date=today,
+                sent_to_names=names,
+                idempotency_key_override=None if len(items) == 1 else _digest_key("cc-digest", notif_type, base_subject, today, cc_email.lower()),
+            )
