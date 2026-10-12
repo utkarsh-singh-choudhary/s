@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.jobs.scheduler import start_scheduler, scheduler
@@ -73,14 +74,17 @@ async def security_headers(request: Request, call_next):
 
 app.include_router(health.router)
 app.include_router(auth.router)
-app.include_router(machines.router)
-app.include_router(pm.router)
+# Plant data must never be readable without logging in: these routers had
+# GET routes with no auth dependency, so apply one to every route.
+_login_required = [Depends(get_current_user)]
+app.include_router(machines.router, dependencies=_login_required)
+app.include_router(pm.router, dependencies=_login_required)
 app.include_router(import_router.router)
 app.include_router(audit_router.router)
 app.include_router(employees.router)
 app.include_router(reports.router)
 app.include_router(breakdowns.router)
-app.include_router(checklists.router)
+app.include_router(checklists.router, dependencies=_login_required)
 app.include_router(work_orders.router)
 app.include_router(spare_parts.router)
 app.include_router(admin_settings.router)
