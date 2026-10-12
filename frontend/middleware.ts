@@ -2,6 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 
 const PUBLIC_PATHS = ["/login"];
 
+// Decodes the JWT payload (no signature check - the API does that) just to
+// read its expiry. The login cookie outlives the token, so without this a
+// stale cookie lets you into pages whose API calls all fail with 401.
+function isExpired(token: string): boolean {
+  try {
+    const payload = token.split(".")[1];
+    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    const exp = JSON.parse(json).exp;
+    return typeof exp === "number" && exp * 1000 <= Date.now();
+  } catch {
+    return false;
+  }
+}
+
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
@@ -10,10 +24,13 @@ export function middleware(req: NextRequest) {
   }
 
   const token = req.cookies.get("pm_token")?.value;
-  if (!token) {
+  if (!token || isExpired(token)) {
     const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("next", pathname);
-    return NextResponse.redirect(loginUrl);
+    const res = NextResponse.redirect(loginUrl);
+    res.cookies.delete("pm_token");
+    res.cookies.delete("pm_user");
+    return res;
   }
 
   return NextResponse.next();
