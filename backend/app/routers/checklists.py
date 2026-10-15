@@ -5,7 +5,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.auth import require_roles
 from app.core.audit import record_audit
-from app.models.models import ChecklistTemplate, ChecklistTemplateItem, Machine, Employee, Role
+from app.models.models import (ChecklistTemplate, ChecklistTemplateItem, PMChecklistResponse,
+                               WorkOrderChecklistResponse, Machine, Employee, Role)
+from app.services.checklist_engine import TASK_TYPES, applicable_template, item_dict
 
 router = APIRouter(prefix="/api/checklists", tags=["checklists"])
 
@@ -15,25 +17,51 @@ ManageRoles = require_roles(Role.ADMIN, Role.MANAGER)
 class ChecklistItemIn(BaseModel):
     text: str
     required: bool = True
+    requires_reading: bool = False
+    reading_unit: str | None = None
+    critical: bool = False
+    evidence_on_fail: bool = False
 
 
 class ChecklistTemplateIn(BaseModel):
     name: str
     description: str | None = None
+    task_type: str = "PM"
+    machine_type: str | None = None
     items: list[ChecklistItemIn] = []
 
 
 class ChecklistTemplateUpdateIn(BaseModel):
     name: str | None = None
     description: str | None = None
+    task_type: str | None = None
+    machine_type: str | None = None
     items: list[ChecklistItemIn] | None = None
-    # items, when provided, REPLACES the whole list (simplest model for a
-    # template that's typically edited as a unit - add/remove/reorder all
-    # happen by resubmitting the full list from the edit form). Existing
-    # PMChecklistResponse rows reference items by id, not by position, so
-    # replacing the list doesn't corrupt past completions - it just means a
-    # deleted item's historical responses no longer map to a current item,
-    # same as it would with a direct DB edit.
+    # items, when provided, is the new full list. Existing items are matched
+    # by text so their ids (and the PM history pointing at them) are kept;
+    # removed items that have history are switched off (active=False), never
+    # deleted.
+
+
+def _check_task_type(v: str) -> str:
+    v = (v or "PM").upper()
+    if v not in TASK_TYPES:
+        raise HTTPException(400, f"task_type must be one of {', '.join(TASK_TYPES)}")
+    return v
+
+
+def _clean_item(item: ChecklistItemIn) -> dict:
+    text = (item.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Checklist item text cannot be empty")
+    return {
+        "text": text,
+        "required": bool(item.required or item.critical),  # a critical item is always mandatory
+        "requires_reading": bool(item.requires_reading),
+        "reading_unit": (item.reading_unit or "").strip() or None if item.requires_reading else None,
+        "critical": bool(item.critical),
+        "evidence_on_fail": bool(item.evidence_on_fail),
+    }
 
 
 def _serialize(t: ChecklistTemplate) -> dict:
@@ -42,7 +70,10 @@ def _serialize(t: ChecklistTemplate) -> dict:
         "name": t.name,
         "description": t.description,
         "active": t.active,
-        "items": [{"id": i.id, "sequence": i.sequence, "text": i.text, "required": i.required} for i in t.items],
+        "task_type": t.task_type or "PM",
+        "machine_type": t.machine_type,
+        "version": t.version or 1,
+        "items": [item_dict(i) for i in sorted(t.items, key=lambda x: x.sequence) if i.active is not False],
     }
 
 
@@ -64,11 +95,15 @@ def get_template(template_id: str, db: Session = Depends(get_db)):
 
 @router.post("")
 def create_template(payload: ChecklistTemplateIn, db: Session = Depends(get_db), user: Employee = Depends(ManageRoles)):
-    template = ChecklistTemplate(name=payload.name, description=payload.description)
+    if not payload.name.strip():
+        raise HTTPException(400, "Template name is required")
+    template = ChecklistTemplate(name=payload.name.strip(), description=payload.description,
+                                 task_type=_check_task_type(payload.task_type),
+                                 machine_type=(payload.machine_type or "").strip() or None, version=1)
     db.add(template)
     db.flush()
     for idx, item in enumerate(payload.items):
-        db.add(ChecklistTemplateItem(template_id=template.id, sequence=idx, text=item.text, required=item.required))
+        db.add(ChecklistTemplateItem(template_id=template.id, sequence=idx, active=True, **_clean_item(item)))
     db.commit()
     db.refresh(template)
     record_audit(db, action="CHECKLIST_TEMPLATE_CREATED", entity_type="ChecklistTemplate", entity_id=template.id,
@@ -87,23 +122,65 @@ def update_template(
     if not template:
         raise HTTPException(404, "Checklist template not found")
 
-    old_value = {"name": template.name, "description": template.description, "item_count": len(template.items)}
+    old_value = {"name": template.name, "description": template.description, "version": template.version,
+                 "task_type": template.task_type, "machine_type": template.machine_type,
+                 "item_count": len([i for i in template.items if i.active is not False])}
 
     if payload.name is not None:
         template.name = payload.name
     if payload.description is not None:
         template.description = payload.description
+    if payload.task_type is not None:
+        template.task_type = _check_task_type(payload.task_type)
+    if payload.machine_type is not None:
+        template.machine_type = payload.machine_type.strip() or None
     if payload.items is not None:
-        db.query(ChecklistTemplateItem).filter(ChecklistTemplateItem.template_id == template.id).delete()
+        existing = [i for i in template.items if i.active is not False]
+        before = sorted([(i.sequence, i.text, bool(i.required), bool(i.requires_reading), i.reading_unit or "",
+                          bool(i.critical), bool(i.evidence_on_fail)) for i in existing])
+        by_text: dict[str, list] = {}
+        for i in existing:
+            by_text.setdefault(i.text.strip().lower(), []).append(i)
+        kept_ids = set()
         for idx, item in enumerate(payload.items):
-            db.add(ChecklistTemplateItem(template_id=template.id, sequence=idx, text=item.text, required=item.required))
+            data = _clean_item(item)
+            bucket = by_text.get(data["text"].lower())
+            if bucket:
+                row = bucket.pop(0)
+                row.sequence = idx
+                for k, v in data.items():
+                    setattr(row, k, v)
+                kept_ids.add(row.id)
+            else:
+                db.add(ChecklistTemplateItem(template_id=template.id, sequence=idx, active=True, **data))
+        for row in existing:
+            if row.id in kept_ids:
+                continue
+            has_history = (
+                db.query(PMChecklistResponse).filter(PMChecklistResponse.checklist_template_item_id == row.id).first()
+                or db.query(WorkOrderChecklistResponse).filter(
+                    WorkOrderChecklistResponse.checklist_template_item_id == row.id).first()
+            ) is not None
+            if has_history:
+                row.active = False
+            else:
+                db.delete(row)
+        after = sorted([(idx, _clean_item(it)["text"], _clean_item(it)["required"], _clean_item(it)["requires_reading"],
+                         _clean_item(it)["reading_unit"] or "", _clean_item(it)["critical"],
+                         _clean_item(it)["evidence_on_fail"]) for idx, it in enumerate(payload.items)])
+        if before != after:
+            # Items changed: new version. Past answers keep the item text and
+            # version they were recorded against (snapshotted at completion).
+            template.version = (template.version or 1) + 1
 
     db.commit()
     db.refresh(template)
 
     record_audit(db, action="CHECKLIST_TEMPLATE_UPDATED", entity_type="ChecklistTemplate", entity_id=template.id,
                  actor_id=user.id, old_value=old_value,
-                 new_value={"name": template.name, "description": template.description, "item_count": len(template.items)})
+                 new_value={"name": template.name, "description": template.description, "version": template.version,
+                            "task_type": template.task_type, "machine_type": template.machine_type,
+                            "item_count": len([i for i in template.items if i.active is not False])})
     return _serialize(template)
 
 
@@ -161,14 +238,15 @@ def assign_template_to_machine(
 
 
 @router.get("/for-machine/{machine_id}")
-def get_template_for_machine(machine_id: str, db: Session = Depends(get_db)):
-    """What the mobile 'complete PM' screen should render for this machine - empty items list if none assigned."""
+def get_template_for_machine(machine_id: str, task_type: str = "PM", db: Session = Depends(get_db)):
+    """What the 'complete' screen should render for this machine and job type - empty items list if none applies."""
     machine = db.query(Machine).get(machine_id)
-    if not machine or not machine.checklist_template_id:
-        return {"template_id": None, "items": []}
-    template = db.query(ChecklistTemplate).get(machine.checklist_template_id)
+    task_type = _check_task_type(task_type)
+    template = applicable_template(db, machine, task_type)
+    if not template:
+        return {"template_id": None, "version": None, "task_type": task_type, "items": []}
     return {
-        "template_id": template.id,
-        "items": [{"id": i.id, "sequence": i.sequence, "text": i.text, "required": i.required}
-                  for i in template.items],
+        "template_id": template.id, "name": template.name, "version": template.version or 1,
+        "task_type": template.task_type,
+        "items": [item_dict(i) for i in sorted(template.items, key=lambda x: x.sequence) if i.active is not False],
     }

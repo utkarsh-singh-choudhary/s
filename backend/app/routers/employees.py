@@ -14,7 +14,7 @@ AdminOnly = require_roles(Role.ADMIN)
 
 # Fields that only an Admin may change. Anyone editing their own record may
 # only touch the fields outside this set (name, phone, notification prefs).
-ADMIN_ONLY_FIELDS = {"email", "department", "designation", "role"}
+ADMIN_ONLY_FIELDS = {"email", "department", "designation", "role", "hourly_rate"}
 
 MAX_BULK_STATUS = 200
 
@@ -38,6 +38,7 @@ class EmployeeUpdate(BaseModel):
     role: Role | None = None
     notification_email_enabled: bool | None = None
     notification_whatsapp_enabled: bool | None = None
+    hourly_rate: float | None = None   # internal labour cost per hour (admin only)
 
 
 class ResetPasswordIn(BaseModel):
@@ -62,6 +63,7 @@ def _serialize(e: Employee) -> dict:
         "active": e.active,
         "notification_email_enabled": e.notification_email_enabled,
         "notification_whatsapp_enabled": e.notification_whatsapp_enabled,
+        "hourly_rate": e.hourly_rate,
     }
 
 
@@ -69,6 +71,13 @@ def _serialize(e: Employee) -> dict:
 def list_employees(db: Session = Depends(get_db), _user=Depends(AdminOnly)):
     employees = db.query(Employee).order_by(Employee.name).all()
     return [_serialize(e) for e in employees]
+
+
+@router.get("/directory")
+def employee_directory(db: Session = Depends(get_db), _user: Employee = Depends(get_current_user)):
+    """Names only (no emails/phones/rates) so any signed-in user can pick a technician or owner from a list."""
+    rows = db.query(Employee).filter(Employee.active.is_(True)).order_by(Employee.name).all()
+    return [{"id": e.id, "name": e.name, "role": e.role.value if e.role else None} for e in rows]
 
 
 @router.get("/me")
@@ -143,6 +152,9 @@ def update_employee(
                 f"Only an admin can change: {', '.join(sorted(disallowed))}",
             )
 
+    if requested.get("hourly_rate") is not None and requested["hourly_rate"] < 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Hourly rate cannot be negative")
+
     if "email" in requested and requested["email"] != emp.email:
         dupe = db.query(Employee).filter(
             Employee.email == requested["email"], Employee.id != emp.id
@@ -156,6 +168,7 @@ def update_employee(
         "role": emp.role.value if emp.role else None,
         "notification_email_enabled": emp.notification_email_enabled,
         "notification_whatsapp_enabled": emp.notification_whatsapp_enabled,
+        "hourly_rate": emp.hourly_rate,
     }
 
     for field, value in requested.items():
@@ -170,6 +183,7 @@ def update_employee(
         "role": emp.role.value if emp.role else None,
         "notification_email_enabled": emp.notification_email_enabled,
         "notification_whatsapp_enabled": emp.notification_whatsapp_enabled,
+        "hourly_rate": emp.hourly_rate,
     }
     record_audit(db, action="EMPLOYEE_UPDATED", entity_type="Employee", entity_id=emp.id,
                  actor_id=user.id, old_value=old_value, new_value=new_value)

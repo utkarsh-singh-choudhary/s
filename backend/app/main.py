@@ -7,7 +7,7 @@ from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.jobs.scheduler import start_scheduler, scheduler
-from app.routers import machines, pm, import_router, health, auth, audit_router, employees, reports, admin_settings, internal_cron, breakdowns, checklists, work_orders, spare_parts
+from app.routers import machines, pm, import_router, health, auth, audit_router, employees, reports, admin_settings, bulk_import, internal_cron, breakdowns, checklists, work_orders, spare_parts, activity, analytics, evidence
 
 
 def _validate_production_config() -> None:
@@ -88,4 +88,8 @@ app.include_router(checklists.router, dependencies=_login_required)
 app.include_router(work_orders.router)
 app.include_router(spare_parts.router)
 app.include_router(admin_settings.router)
+app.include_router(bulk_import.router)
+app.include_router(activity.router)
+app.include_router(analytics.router)
+app.include_router(evidence.router)
 app.include_router(internal_cron.router)

@@ -2,6 +2,7 @@
 
 import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { api, Employee, BulkStatusResult } from "@/lib/api";
 import { StatusPill } from "@/components/StatusPill";
 import { getUser } from "@/lib/auth";
@@ -21,6 +22,7 @@ type EditState = {
   department: string;
   designation: string;
   role: string;
+  hourly_rate: string;
 };
 
 function toEditState(e: Employee): EditState {
@@ -31,6 +33,7 @@ function toEditState(e: Employee): EditState {
     department: e.department || "",
     designation: e.designation || "",
     role: e.role || "TECHNICIAN",
+    hourly_rate: e.hourly_rate != null ? String(e.hourly_rate) : "",
   };
 }
 
@@ -153,12 +156,13 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
     setBusyId(id);
     setError(null);
     try {
-      const payload: Record<string, string> = { name: edit.name, phone: edit.phone };
+      const payload: Record<string, any> = { name: edit.name, phone: edit.phone };
       if (isAdmin) {
         payload.email = edit.email;
         payload.department = edit.department;
         payload.designation = edit.designation;
         payload.role = edit.role;
+        if (edit.hourly_rate.trim() !== "") payload.hourly_rate = Number(edit.hourly_rate);
       }
       const updated = await api.updateEmployee(id, payload as any);
       setEmployees((prev) => prev.map((e) => (e.id === id ? { ...e, ...updated } : e)));
@@ -195,13 +199,16 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
       </div>
 
       {isAdmin && (
-        <div>
+        <div className="flex items-center gap-2">
           <button
             onClick={() => setShowAdd((v) => !v)}
             className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90"
           >
             {showAdd ? "Cancel" : "+ Add employee"}
           </button>
+          <Link href="/import/data?kind=employees" className="text-sm px-3 py-1.5 rounded-sm border border-border hover:bg-surface">
+            Import from Excel
+          </Link>
         </div>
       )}
 
@@ -395,6 +402,15 @@ export default function EmployeesClient({ initialEmployees }: { initialEmployees
                                   <input
                                     value={edit.designation}
                                     onChange={(ev) => setEdit({ ...edit, designation: ev.target.value })}
+                                    className="border border-border rounded-sm px-2 py-1 text-sm w-full"
+                                  />
+                                </label>
+                                <label className="text-xs space-y-1">
+                                  <span className="text-muted">Labour rate per hour</span>
+                                  <input
+                                    type="number" min={0} step="0.01"
+                                    value={edit.hourly_rate}
+                                    onChange={(ev) => setEdit({ ...edit, hourly_rate: ev.target.value })}
                                     className="border border-border rounded-sm px-2 py-1 text-sm w-full"
                                   />
                                 </label>

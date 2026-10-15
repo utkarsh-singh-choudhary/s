@@ -90,7 +90,12 @@ export default function AdminSettingsPage() {
       try {
         parsed = JSON.parse(drafts[key]);
       } catch {
-        throw new Error("Value must be valid JSON (e.g. 7, or [\"a\",\"b\"], or {...})");
+        const def = settings.find((x) => x.key === key)?.default;
+        if (typeof def === "string" && (drafts[key] ?? "").trim() !== "") {
+          parsed = drafts[key].trim(); // plain text is fine for text settings such as currency
+        } else {
+          throw new Error("Value must be valid JSON (e.g. 7, or [\"a\",\"b\"], or {...})");
+        }
       }
       const updated = await api.updateAdminSetting(key, parsed);
       setSettings((prev) => prev.map((s) => (s.key === key ? { ...s, value: updated.value } : s)));

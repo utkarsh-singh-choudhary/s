@@ -99,6 +99,10 @@ export default function ImportWizard() {
       <div>
         <h1 className="text-lg font-semibold text-ink">Import PM Plan</h1>
         <p className="text-sm text-muted">Upload the company's PM Excel file and import it into the system.</p>
+        <p className="text-xs text-muted mt-1">
+          Importing spare parts or employees instead?{" "}
+          <a href="/import/data" className="text-accent hover:underline">Import from Excel</a>
+        </p>
       </div>
 
       {error && (

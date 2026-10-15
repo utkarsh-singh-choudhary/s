@@ -15,6 +15,7 @@ type FormState = {
   manufacturer: string;
   specification: string;
   location: string;
+  machine_type: string;
   remarks: string;
   critical: boolean;
   checklist_template_id: string;
@@ -26,6 +27,7 @@ const EMPTY_FORM: FormState = {
   manufacturer: "",
   specification: "",
   location: "",
+  machine_type: "",
   remarks: "",
   critical: false,
   checklist_template_id: "",
@@ -38,6 +40,7 @@ function toFormState(m: Machine): FormState {
     manufacturer: m.manufacturer || "",
     specification: m.specification || "",
     location: m.location || "",
+    machine_type: m.machine_type || "",
     remarks: m.remarks || "",
     critical: m.critical,
     checklist_template_id: m.checklist_template_id || "",
@@ -51,6 +54,7 @@ function toPayload(f: FormState): MachineIn {
     manufacturer: f.manufacturer || undefined,
     specification: f.specification || undefined,
     location: f.location || undefined,
+    machine_type: f.machine_type.trim() || null,
     remarks: f.remarks || undefined,
     critical: f.critical,
     checklist_template_id: f.checklist_template_id || null,
@@ -196,6 +200,15 @@ export default function MachinesClient({ machines, checklists }: { machines: Mac
             className="border border-border rounded-sm px-2 py-1 text-sm w-full"
           />
         </label>
+        <label className="text-xs space-y-1">
+          <span className="text-muted">Machine type (used to pick checklists)</span>
+          <input
+            value={form.machine_type}
+            onChange={(e) => setForm({ ...form, machine_type: e.target.value })}
+            placeholder="e.g. CNC, Compressor"
+            className="border border-border rounded-sm px-2 py-1 text-sm w-full"
+          />
+        </label>
         <label className="text-xs space-y-1 md:col-span-2">
           <span className="text-muted">Specification</span>
           <input
@@ -244,14 +257,17 @@ export default function MachinesClient({ machines, checklists }: { machines: Mac
           <h1 className="text-lg font-semibold text-ink">Machines</h1>
           <p className="text-sm text-muted">{activeCount} active machine{activeCount === 1 ? "" : "s"}.</p>
         </div>
-        {canManage && !creating && (
-          <button
-            onClick={startCreate}
-            className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90"
-          >
-            + Add Machine
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          <Link href="/machines/labels" className="text-sm text-accent hover:underline">QR labels</Link>
+          {canManage && !creating && (
+            <button
+              onClick={startCreate}
+              className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90"
+            >
+              + Add Machine
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <div className="text-sm text-bad">{error}</div>}

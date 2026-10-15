@@ -14,6 +14,7 @@ class MachineOut(BaseModel):
     critical: bool
     active: bool
     checklist_template_id: Optional[str] = None
+    machine_type: Optional[str] = None
 
     class Config:
         from_attributes = True

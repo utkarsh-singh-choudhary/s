@@ -11,12 +11,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-export default async function BreakdownsPage() {
-  const [breakdowns, reliability, machines] = await Promise.all([
-    safe(() => api.breakdowns(), []),
-    safe(() => api.reliability(), { machines: [] }),
-    safe(() => api.machines(), []),
-  ]);
-
-  return <BreakdownsClient initialBreakdowns={breakdowns} reliability={reliability.machines} machines={machines} />;
+export default async function BreakdownsPage({ searchParams }: { searchParams: { machine_id?: string; status?: string } }) {
+  const machines = await safe(() => api.machines(), []);
+  return <BreakdownsClient machines={machines} initialMachineId={searchParams.machine_id || ""} initialStatus={searchParams.status || ""} />;
 }

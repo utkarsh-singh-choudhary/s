@@ -2,6 +2,7 @@ import { effectiveStatus } from "@/lib/pmStatus";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { StatusPill } from "@/components/StatusPill";
+import MachineQr from "@/components/MachineQr";
 
 export const dynamic = "force-dynamic";
 
@@ -119,12 +120,7 @@ export default async function MachineDetailPage({ params }: { params: { id: stri
             <Row label="Remarks" value={machine.remarks} />
           </dl>
           <div className="pt-2 border-t border-border">
-            <img
-              src={api.machineQrcodeUrl(machine.id)}
-              alt="Machine QR code"
-              className="w-28 h-28 border border-border rounded-sm"
-            />
-            <p className="text-xs text-muted mt-1">Scan on the shop floor to open this machine.</p>
+            <MachineQr machineId={machine.id} label={`${machine.machine_number} ${machine.machine_name}`} />
           </div>
         </div>
 
@@ -181,11 +177,16 @@ export default async function MachineDetailPage({ params }: { params: { id: stri
                   <td>{p.financial_year}</td>
                   <td><StatusPill status={effectiveStatus(p.status, p.planned_date)} /></td>
                   <td>
-                    {p.status !== "COMPLETED" && p.status !== "CANCELLED" && (
-                      <Link href={`/pm/${p.id}/complete`} className="text-xs text-accent hover:underline">
-                        Complete
+                    <div className="flex items-center gap-3">
+                      {p.status !== "COMPLETED" && p.status !== "CANCELLED" && (
+                        <Link href={`/pm/${p.id}/complete`} className="text-xs text-accent hover:underline">
+                          Complete
+                        </Link>
+                      )}
+                      <Link href={`/pm/${p.id}`} className="text-xs text-accent hover:underline">
+                        Details{p.status === "COMPLETED" ? " & photos" : ""}
                       </Link>
-                    )}
+                    </div>
                   </td>
                 </tr>
               ))}

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api, CostReport, DataQualityReport, MonthlyReport } from "@/lib/api";
 import { KpiCard } from "@/components/KpiCard";
+import AnalyticsPanel from "./AnalyticsPanel";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -12,7 +13,7 @@ const MONTHS = [
 export default function ReportsClient() {
   const [month, setMonth] = useState("September");
   const [financialYear, setFinancialYear] = useState("26-27");
-  const [tab, setTab] = useState<"monthly" | "quality" | "cost">("monthly");
+  const [tab, setTab] = useState<"analytics" | "monthly" | "quality" | "cost">("analytics");
   const [monthly, setMonthly] = useState<MonthlyReport | null>(null);
   const [quality, setQuality] = useState<DataQualityReport | null>(null);
   const [cost, setCost] = useState<CostReport | null>(null);
@@ -47,6 +48,12 @@ export default function ReportsClient() {
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex gap-2">
           <button
+            onClick={() => setTab("analytics")}
+            className={`text-xs px-2.5 py-1 rounded-sm border ${tab === "analytics" ? "bg-ink text-white border-ink" : "bg-panel text-muted border-border"}`}
+          >
+            Reliability &amp; Analytics
+          </button>
+          <button
             onClick={() => setTab("monthly")}
             className={`text-xs px-2.5 py-1 rounded-sm border ${tab === "monthly" ? "bg-ink text-white border-ink" : "bg-panel text-muted border-border"}`}
           >
@@ -76,6 +83,7 @@ export default function ReportsClient() {
             </select>
           </div>
         )}
+        {tab !== "analytics" && (<>
         <div>
           <label className="text-xs text-muted block mb-1">Financial Year</label>
           <input
@@ -87,6 +95,7 @@ export default function ReportsClient() {
         <button onClick={load} disabled={loading} className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90 disabled:opacity-50">
           {loading ? "Loading…" : "Run report"}
         </button>
+        </>)}
 
         {tab === "monthly" && (
           <div className="flex gap-2 ml-auto">
@@ -101,6 +110,8 @@ export default function ReportsClient() {
       </div>
 
       {error && <div className="text-sm text-bad">{error}</div>}
+
+      {tab === "analytics" && <AnalyticsPanel />}
 
       {tab === "monthly" && monthly && (
         <div className="space-y-4">
@@ -197,7 +208,7 @@ export default function ReportsClient() {
         </div>
       )}
 
-      {!monthly && !quality && !cost && !loading && !error && (
+      {tab !== "analytics" && !monthly && !quality && !cost && !loading && !error && (
         <div className="kpi-card text-sm text-muted">Choose a period and run a report.</div>
       )}
     </div>

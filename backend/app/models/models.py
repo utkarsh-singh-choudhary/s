@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, String, Integer, Boolean, Date, DateTime, ForeignKey, Text,
-    Enum as SAEnum, UniqueConstraint, Index, ARRAY
+    Enum as SAEnum, UniqueConstraint, Index, ARRAY, LargeBinary, Float
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -111,6 +111,9 @@ class Machine(Base):
     remarks = Column(Text)
     critical = Column(Boolean, default=False)
     active = Column(Boolean, default=True)
+    # Used to pick the right checklist template (a CNC, a compressor and a
+    # crane must not get the same checklist). Free text, matched case-insensitively.
+    machine_type = Column(String(100))
 
     # Which PM checklist to fill out when this machine's job is completed
     # (e.g. "Power Press PM" -> 6 sub-steps). Nullable: machines with no
@@ -151,6 +154,10 @@ class ChecklistTemplate(Base):
     name = Column(String(150), nullable=False)
     description = Column(String(500))
     active = Column(Boolean, default=True)
+    # PM | REPAIR | INSPECTION - the three need different mandatory steps.
+    task_type = Column(String(20), nullable=False, default="PM", server_default="PM")
+    machine_type = Column(String(100))  # applies to machines of this type (optional)
+    version = Column(Integer, nullable=False, default=1, server_default="1")  # bumped whenever the items change
     created_at = Column(DateTime, default=datetime.utcnow)
 
     items = relationship("ChecklistTemplateItem", back_populates="template",
@@ -166,6 +173,13 @@ class ChecklistTemplateItem(Base):
     sequence = Column(Integer, nullable=False, default=0)
     text = Column(String(500), nullable=False)
     required = Column(Boolean, default=True)  # if True, must be checked before COMPLETED
+    # Items that have history (a past PMChecklistResponse) are never deleted
+    # when a template is edited - they're switched off instead.
+    active = Column(Boolean, default=True, nullable=False, server_default="true")
+    requires_reading = Column(Boolean, default=False, server_default="false")  # a measured value must be recorded
+    reading_unit = Column(String(30))
+    critical = Column(Boolean, default=False, server_default="false")  # a FAIL blocks release and raises a corrective WO
+    evidence_on_fail = Column(Boolean, default=False, server_default="false")  # a photo/file is needed if it fails
 
     template = relationship("ChecklistTemplate", back_populates="items")
 
@@ -183,6 +197,13 @@ class PMChecklistResponse(Base):
     checklist_template_item_id = Column(UUID(as_uuid=False), ForeignKey("checklist_template_items.id"), nullable=False)
     checked = Column(Boolean, default=False)
     note = Column(Text)
+    # Snapshot of the item as it read when the PM was completed, so history
+    # stays readable even if the template is edited later.
+    item_text = Column(String(500))
+    item_required = Column(Boolean)
+    result = Column(String(10))        # PASS | FAIL | NA  (checked == result == PASS)
+    reading = Column(String(100))
+    template_version = Column(Integer)
 
     __table_args__ = (
         UniqueConstraint("pm_actual_id", "checklist_template_item_id", name="uq_checklist_response_actual_item"),
@@ -206,6 +227,7 @@ class Employee(Base):
 
     # auth (Phase 4 RBAC)
     hashed_password = Column(String(255))
+    hourly_rate = Column(Float)  # internal labour cost per hour; falls back to the labor_hour_cost setting
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -299,6 +321,24 @@ class PMActual(Base):
     checklist_responses = relationship("PMChecklistResponse", backref="pm_actual")
 
 
+class PMAttachment(Base):
+    """
+    A photo / PDF uploaded as proof of work for a PM plan. Stored in the
+    database (not on disk) so it survives Render redeploys - the free web
+    service's disk is wiped on every deploy. Many per plan.
+    """
+    __tablename__ = "pm_attachments"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    pm_plan_id = Column(UUID(as_uuid=False), ForeignKey("pm_plans.id"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(100), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    data = Column(LargeBinary, nullable=False)
+    uploaded_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class BreakdownEvent(Base):
     """
     A corrective-maintenance / breakdown event, separate from planned PM
@@ -320,6 +360,24 @@ class BreakdownEvent(Base):
     cause = Column(Text)
     action_taken = Column(Text)
     resulted_in_scrap_or_replace = Column(Boolean, default=False)  # excluded from MTTR if True
+
+    # --- full incident record (CMMS upgrade) ---
+    bd_number = Column(String(20), unique=True, index=True)  # BD-2026-00125
+    reported_at = Column(DateTime)                           # when it was entered (breakdown_at = when it failed)
+    failure_category = Column(String(30))                    # MECHANICAL | ELECTRICAL | HYDRAULIC | ...
+    failure_mode = Column(String(120))
+    severity = Column(String(10), default="MEDIUM")          # LOW | MEDIUM | HIGH | CRITICAL
+    production_impact = Column(String(30))                   # STOPPED | REDUCED | QUALITY | NONE
+    temporary_action = Column(Text)
+    corrective_action = Column(Text)
+    root_cause = Column(Text)
+    status = Column(String(30), default="REPORTED", index=True)
+    rca_status = Column(String(20), default="NOT_STARTED")   # NOT_STARTED | IN_PROGRESS | UNVERIFIED | CONFIRMED
+    rca_data = Column(JSONB)                                 # symptom, causes, five_whys, fishbone, approval
+    verified_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    verified_at = Column(DateTime)
+    closed_at = Column(DateTime)
+    closed_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -365,6 +423,30 @@ class WorkOrder(Base):
     closed_at = Column(DateTime, nullable=True)
     verified_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
 
+    # --- full lifecycle (CMMS upgrade) ---
+    source = Column(String(30), default="BREAKDOWN")   # BREAKDOWN | PM | INSPECTION | OPERATOR_REQUEST | IMPROVEMENT
+    failure_category = Column(String(30))
+    supervisor_id = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    planned_start = Column(DateTime)
+    safety_risk = Column(String(10))                   # LOW | MEDIUM | HIGH
+    permit_required = Column(Boolean, default=False)
+    loto_required = Column(Boolean, default=False)
+    safety_confirmed = Column(Boolean, default=False)  # permit / isolation checked by the person doing the job
+    estimated_hours = Column(Float)
+    estimated_cost = Column(Float)                     # kept separate from the actual cost
+    waiting_reason = Column(String(20))                # PARTS | APPROVAL | ACCESS | VENDOR | SHUTDOWN
+    diagnosis = Column(Text)
+    resolution_code = Column(String(30))
+    repair_summary = Column(Text)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    completed_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    restored_at = Column(DateTime)                     # machine back in service (separate from closed_at)
+    cancelled = Column(Boolean, default=False)
+    cancel_reason = Column(Text)
+    reopen_count = Column(Integer, default=0)
+    parent_work_order_id = Column(UUID(as_uuid=False), ForeignKey("work_orders.id"), nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -395,6 +477,9 @@ class SparePart(Base):
     unit_cost = Column(Integer, nullable=True)  # cost per unit, in whole currency units (e.g. rupees)
     storage_location = Column(String(120))
     preferred_vendor = Column(String(120))
+    category = Column(String(80))
+    compatible_machine_ids = Column(JSONB)   # list of machine ids this part fits
+    lead_time_days = Column(Integer)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -411,6 +496,12 @@ class SparePartTransaction(Base):
     reason = Column(String(255))
     performed_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # RECEIPT | CONSUME | RETURN | DAMAGED | ADJUSTMENT (old rows have NULL: change<0 = consume, >0 = receipt)
+    txn_type = Column(String(20))
+    unit_cost = Column(Float)  # cost per unit AT THE TIME of the movement - never recalculated later
+    breakdown_event_id = Column(UUID(as_uuid=False), ForeignKey("breakdown_events.id"), nullable=True)
+    idempotency_key = Column(String(100), unique=True)  # a repeated request with the same key is ignored
+    approved_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
 
     spare_part = relationship("SparePart")
     work_order = relationship("WorkOrder")
@@ -450,6 +541,7 @@ class AuditLog(Base):
     new_value = Column(JSONB)
     ip_address = Column(String(64))
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    signature = Column(String(64))  # HMAC of the row, so edits made outside the app are detectable
 
 
 class ImportBatch(Base):
@@ -489,3 +581,113 @@ class AppSetting(Base):
     description = Column(String(500))
     updated_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"))
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# CMMS upgrade: root-cause actions, labour, costs, logs, checklists, evidence
+# ---------------------------------------------------------------------------
+
+class CorrectiveAction(Base):
+    """Corrective / preventive action raised from a breakdown investigation."""
+    __tablename__ = "corrective_actions"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    breakdown_event_id = Column(UUID(as_uuid=False), ForeignKey("breakdown_events.id"), nullable=False, index=True)
+    kind = Column(String(12), nullable=False, default="CORRECTIVE")  # CORRECTIVE | PREVENTIVE
+    description = Column(Text, nullable=False)
+    owner_id = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    target_date = Column(Date)
+    status = Column(String(12), nullable=False, default="OPEN")      # OPEN | IN_PROGRESS | DONE
+    completed_at = Column(DateTime)
+    effectiveness = Column(String(14), default="PENDING")            # PENDING | EFFECTIVE | NOT_EFFECTIVE
+    effectiveness_note = Column(Text)
+    created_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkOrderLog(Base):
+    """Every status change / start / pause / resume / finish, with who, when and why."""
+    __tablename__ = "work_order_logs"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    work_order_id = Column(UUID(as_uuid=False), ForeignKey("work_orders.id"), nullable=False, index=True)
+    event = Column(String(30), nullable=False)
+    from_status = Column(String(30))
+    to_status = Column(String(30))
+    reason = Column(String(40))
+    note = Column(Text)
+    by_id = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    logged_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkOrderLabourEntry(Base):
+    __tablename__ = "work_order_labour"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    work_order_id = Column(UUID(as_uuid=False), ForeignKey("work_orders.id"), nullable=False, index=True)
+    technician_id = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=False)
+    started_at = Column(DateTime)
+    ended_at = Column(DateTime)
+    hours = Column(Float, nullable=False)
+    hourly_rate = Column(Float, nullable=False)  # snapshot: later rate changes never touch old entries
+    note = Column(Text)
+    created_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkOrderCost(Base):
+    """External services, consumables and other repair costs (parts and labour come from their own tables)."""
+    __tablename__ = "work_order_costs"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    work_order_id = Column(UUID(as_uuid=False), ForeignKey("work_orders.id"), nullable=False, index=True)
+    category = Column(String(20), nullable=False)  # EXTERNAL_SERVICE | CONSUMABLE | OTHER
+    description = Column(String(255), nullable=False)
+    amount = Column(Float, nullable=False)         # before tax
+    tax_amount = Column(Float, default=0)
+    currency = Column(String(8), default="INR")
+    vendor = Column(String(150))
+    invoice_ref = Column(String(100))
+    recorded_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    recorded_at = Column(DateTime, default=datetime.utcnow)
+    approved_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    approved_at = Column(DateTime)
+
+
+class WorkOrderChecklistResponse(Base):
+    """Checklist answers for a repair/inspection work order, with the item text and version as they were."""
+    __tablename__ = "work_order_checklist_responses"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    work_order_id = Column(UUID(as_uuid=False), ForeignKey("work_orders.id"), nullable=False, index=True)
+    checklist_template_item_id = Column(UUID(as_uuid=False), ForeignKey("checklist_template_items.id"), nullable=False)
+    result = Column(String(10), nullable=False)    # PASS | FAIL | NA
+    reading = Column(String(100))
+    note = Column(Text)
+    item_text = Column(String(500))
+    item_required = Column(Boolean)
+    template_version = Column(Integer)
+    performed_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"), nullable=True)
+    performed_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("work_order_id", "checklist_template_item_id", name="uq_wo_checklist_item"),
+    )
+
+
+class EvidenceFile(Base):
+    """Photos / PDFs attached to a breakdown or work order (stored in the database so they survive redeploys)."""
+    __tablename__ = "evidence_files"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    entity_type = Column(String(30), nullable=False)   # breakdown | work_order
+    entity_id = Column(UUID(as_uuid=False), nullable=False)
+    label = Column(String(120))
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(100), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    data = Column(LargeBinary, nullable=False)
+    uploaded_by = Column(UUID(as_uuid=False), ForeignKey("employees.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (Index("ix_evidence_entity", "entity_type", "entity_id"),)

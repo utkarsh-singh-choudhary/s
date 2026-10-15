@@ -27,7 +27,7 @@ export type QueuedCompletion = {
     delay_reason?: string;
     downtime_minutes?: number;
   };
-  checklistResponses?: { item_id: string; checked: boolean; note?: string }[];
+  checklistResponses?: { item_id: string; checked?: boolean; result?: string; reading?: string; note?: string }[];
   file: File | null;
   queuedAt: string;
   lastError?: string;

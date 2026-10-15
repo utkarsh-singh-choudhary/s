@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -11,9 +11,12 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.auth import get_current_user, require_roles
 from app.core.audit import record_audit
-from app.models.models import PMPlan, PMActual, PMStatus, CompletionClass, Employee, Role, Machine, ChecklistTemplateItem, PMChecklistResponse
+from app.models.models import PMPlan, PMActual, PMStatus, CompletionClass, Employee, Role, Machine, ChecklistTemplateItem, PMChecklistResponse, PMAttachment, WorkOrder
 from app.schemas.schemas import PMPlanOut, PMCompleteIn
 from app.core.timeutils import today_local
+from app.models.models import ChecklistTemplate, WorkOrderPriority
+from app.services import checklist_engine as ce
+from app.services.wo_service import create_work_order
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
 
@@ -25,11 +28,78 @@ router = APIRouter(prefix="/api/pm", tags=["pm"])
 # or swap this for an S3/Azure Blob client; the path stored on
 # PMActual.attachment_path is all downstream code depends on.
 ATTACHMENT_DIR = settings.ATTACHMENT_DIR
-os.makedirs(ATTACHMENT_DIR, exist_ok=True)
+try:
+    os.makedirs(ATTACHMENT_DIR, exist_ok=True)
+except OSError:
+    pass  # only needed to read files uploaded before attachments moved to the database
 ALLOWED_ATTACHMENT_EXT = {".jpg", ".jpeg", ".png", ".pdf", ".heic", ".webp"}
 MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024  # 15 MB
 
 MAX_BULK_COMPLETE = 200
+MAX_FILES_PER_PM = 20
+
+EvidenceUploadRoles = require_roles(Role.TECHNICIAN, Role.SUPERVISOR, Role.MANAGER, Role.ADMIN)
+EvidenceDeleteRoles = require_roles(Role.MANAGER, Role.ADMIN)
+
+
+def _sniff_content_type(data: bytes) -> str | None:
+    """Decide the real file type from its first bytes - never trust the filename/browser."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:5] == b"%PDF-":
+        return "application/pdf"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[4:8] == b"ftyp" and data[8:12] in (b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis"):
+        return "image/heic"
+    return None
+
+
+async def _save_evidence(db: Session, plan_id: str, files: list, user: Employee) -> list[PMAttachment]:
+    """Validate and store uploaded files in the database (no commit)."""
+    files = [f for f in files if f is not None and getattr(f, "filename", None)]
+    if not files:
+        return []
+    existing = db.query(PMAttachment).filter(PMAttachment.pm_plan_id == plan_id).count()
+    if existing + len(files) > MAX_FILES_PER_PM:
+        raise HTTPException(400, f"A PM can hold at most {MAX_FILES_PER_PM} files.")
+    saved = []
+    for f in files:
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in ALLOWED_ATTACHMENT_EXT:
+            raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {sorted(ALLOWED_ATTACHMENT_EXT)}")
+        data = await f.read()
+        if not data:
+            raise HTTPException(400, f"'{f.filename}' is empty.")
+        if len(data) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(400, f"'{f.filename}' exceeds the 15 MB limit.")
+        ctype = _sniff_content_type(data)
+        if not ctype:
+            raise HTTPException(400, f"'{f.filename}' is not a valid photo or PDF.")
+        row = PMAttachment(
+            pm_plan_id=plan_id, filename=os.path.basename(f.filename)[:255], content_type=ctype,
+            size_bytes=len(data), data=data, uploaded_by=user.id,
+        )
+        db.add(row)
+        saved.append(row)
+    return saved
+
+
+def _legacy_file(actual: PMActual | None) -> str | None:
+    """Path of a pre-database attachment, only if it really lives under ATTACHMENT_DIR."""
+    if not actual or not actual.attachment_path:
+        return None
+    root = os.path.realpath(ATTACHMENT_DIR)
+    path = os.path.realpath(actual.attachment_path)
+    if os.path.commonpath([root, path]) != root or not os.path.isfile(path):
+        return None
+    return path
+
+
+_LEGACY_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".pdf": "application/pdf",
+                 ".webp": "image/webp", ".heic": "image/heic"}
 
 
 def _apply_pm_completion(
@@ -199,7 +269,7 @@ def bulk_complete_pm(
 
         machine = db.query(Machine).get(plan.machine_id)
         machine_number = machine.machine_number if machine else None
-        if machine and machine.checklist_template_id:
+        if machine and ce.applicable_template(db, machine, "PM"):
             skipped.append({"id": pm_id, "machine_number": machine_number, "reason": "requires_checklist"})
             continue
 
@@ -283,6 +353,7 @@ async def complete_pm(
     downtime_minutes: int | None = Form(None),
     checklist_responses: str | None = Form(None),  # JSON: [{"item_id": "...", "checked": true, "note": "..."}]
     attachment: UploadFile | None = File(None),
+    attachments: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles(Role.TECHNICIAN, Role.SUPERVISOR, Role.MANAGER, Role.ADMIN)),
 ):
@@ -305,18 +376,29 @@ async def complete_pm(
         raise HTTPException(404, "PM plan not found")
 
     machine = db.query(Machine).get(plan.machine_id)
-    responses = _json.loads(checklist_responses) if checklist_responses else []
-    if machine and machine.checklist_template_id:
-        template_items = db.query(ChecklistTemplateItem).filter(
-            ChecklistTemplateItem.template_id == machine.checklist_template_id
-        ).all()
-        checked_item_ids = {r["item_id"] for r in responses if r.get("checked")}
-        missing_required = [i.text for i in template_items if i.required and i.id not in checked_item_ids]
-        if missing_required:
-            raise HTTPException(
-                400,
-                f"Cannot mark complete - required checklist item(s) not checked: {', '.join(missing_required)}",
-            )
+    try:
+        raw_responses = _json.loads(checklist_responses) if checklist_responses else []
+        answers = ce.normalise_answers(raw_responses)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(400, "checklist_responses must be valid JSON")
+
+    template = ce.applicable_template(db, machine, "PM")
+    items = ce.active_items(db, template) if template else []
+    if items:
+        existing_files = db.query(PMAttachment).filter(PMAttachment.pm_plan_id == pm_id).count()
+        has_evidence = bool(attachment or attachments) or existing_files > 0
+        verdict = ce.evaluate(items, answers, has_evidence)
+        # A critical FAIL is recorded and escalated (below) rather than rejected -
+        # the technician has found a real problem and must be able to report it.
+        blockers = [b for b in verdict["blockers"] if not b.startswith("Critical check failed")]
+        critical_fails = verdict["critical_fails"]
+        if blockers:
+            raise HTTPException(400, "Cannot mark complete - " + "; ".join(blockers))
+    else:
+        critical_fails = []
+    item_by_id = {i.id: i for i in items}
 
     old_status = plan.status.value if plan.status else None
     actual = db.query(PMActual).filter(PMActual.pm_plan_id == pm_id).first()
@@ -329,30 +411,46 @@ async def complete_pm(
 
     if not is_new:
         db.query(PMChecklistResponse).filter(PMChecklistResponse.pm_actual_id == actual.id).delete()
-    for r in responses:
+    for item_id, a in answers.items():
+        item = item_by_id.get(item_id) or db.query(ChecklistTemplateItem).get(item_id)
+        if not item:
+            raise HTTPException(400, "Checklist item not found - reload the page and try again.")
         db.add(PMChecklistResponse(
-            pm_actual_id=actual.id, checklist_template_item_id=r["item_id"],
-            checked=bool(r.get("checked")), note=r.get("note"),
+            pm_actual_id=actual.id, checklist_template_item_id=item.id,
+            checked=a["result"] == "PASS", result=a["result"], reading=a["reading"], note=a["note"],
+            item_text=item.text, item_required=item.required,
+            template_version=template.version if template else None,
         ))
 
-    if attachment is not None and attachment.filename:
-        ext = os.path.splitext(attachment.filename)[1].lower()
-        if ext not in ALLOWED_ATTACHMENT_EXT:
-            raise HTTPException(400, f"Unsupported attachment type '{ext}'. Allowed: {sorted(ALLOWED_ATTACHMENT_EXT)}")
-        contents = await attachment.read()
-        if len(contents) > MAX_ATTACHMENT_BYTES:
-            raise HTTPException(400, "Attachment exceeds 15 MB limit.")
-        stored_name = f"{pm_id}_{uuid.uuid4().hex[:8]}{ext}"
-        stored_path = os.path.join(ATTACHMENT_DIR, stored_name)
-        with open(stored_path, "wb") as f:
-            f.write(contents)
-        actual.attachment_path = stored_path
+    # Photos / PDFs go into the database so they can be opened again later.
+    uploads = list(attachments or [])
+    if attachment is not None:
+        uploads.insert(0, attachment)
+    saved_files = await _save_evidence(db, pm_id, uploads, user)
 
     requires_sign_off = not _apply_pm_completion(
         db, plan, actual, actual_date, user,
         completed_by=completed_by, remarks=remarks,
         delay_reason=delay_reason, downtime_minutes=downtime_minutes,
     )
+    corrective_wo = None
+    if critical_fails:
+        # A failed critical check means the machine is not released: a supervisor
+        # must review, and a corrective work order is raised automatically.
+        plan.status = PMStatus.PENDING_SUPERVISOR_CONFIRMATION
+        plan.confirmed_by_supervisor_id = None
+        plan.confirmed_at = None
+        requires_sign_off = True
+        failed_text = "; ".join(i.text for i in critical_fails)
+        existing_wo = db.query(WorkOrder).filter(WorkOrder.pm_plan_id == pm_id, WorkOrder.source == "PM",
+                                                 WorkOrder.cancelled.isnot(True)).first()
+        if not existing_wo:
+            corrective_wo = create_work_order(
+                db, user, machine_id=plan.machine_id, pm_plan_id=pm_id, source="PM",
+                title=f"PM critical check failed - {machine.machine_number if machine else ''}".strip(" -"),
+                description=f"Critical PM check(s) failed: {failed_text}",
+                priority=WorkOrderPriority.HIGH, assigned_to=plan.assigned_to,
+            )
     db.commit()
 
     record_audit(
@@ -364,14 +462,20 @@ async def complete_pm(
         old_value={"status": old_status},
         new_value={"status": plan.status.value, "actual_date": str(actual_date),
                    "completion_class": actual.completion_class.value if actual.completion_class else None,
-                   "has_attachment": bool(actual.attachment_path)},
+                   "attachments_added": len(saved_files),
+                   "critical_fails": [i.text for i in critical_fails],
+                   "checklist_version": template.version if template else None},
     )
 
     return {
         "success": True, "pm_id": pm_id,
+        "critical_failures": len(critical_fails),
+        "corrective_work_order_id": corrective_wo.id if corrective_wo else None,
+        "corrective_work_order_number": corrective_wo.number if corrective_wo else None,
         "status": plan.status.value,
         "completion_class": actual.completion_class,
-        "has_attachment": bool(actual.attachment_path),
+        "has_attachment": bool(saved_files) or bool(actual.attachment_path),
+        "attachments_added": len(saved_files),
         "awaiting_supervisor_confirmation": requires_sign_off,
     }
 
@@ -412,7 +516,145 @@ def get_attachment(
     db: Session = Depends(get_db),
     _user: Employee = Depends(get_current_user),
 ):
+    """Older single attachment (uploaded before files moved into the database)."""
     actual = db.query(PMActual).filter(PMActual.pm_plan_id == pm_id).first()
-    if not actual or not actual.attachment_path or not os.path.exists(actual.attachment_path):
+    path = _legacy_file(actual)
+    if not path:
         raise HTTPException(404, "No attachment for this PM completion")
-    return FileResponse(actual.attachment_path)
+    return FileResponse(path, headers={"X-Content-Type-Options": "nosniff"})
+
+
+def _name(db: Session, emp_id: str | None) -> str | None:
+    if not emp_id:
+        return None
+    e = db.query(Employee).get(emp_id)
+    return e.name if e else None
+
+
+@router.get("/{pm_id}/details")
+def pm_details(pm_id: str, db: Session = Depends(get_db), _user: Employee = Depends(get_current_user)):
+    """
+    Everything recorded about a PM, for the permanent details page: plan,
+    completion record, who did / confirmed it, the checklist answers as they
+    were at the time, and the uploaded photos/PDFs.
+    """
+    plan = db.query(PMPlan).get(pm_id)
+    if not plan:
+        raise HTTPException(404, "PM plan not found")
+    machine = db.query(Machine).get(plan.machine_id)
+    actual = db.query(PMActual).filter(PMActual.pm_plan_id == pm_id).first()
+
+    checklist = []
+    if actual:
+        rows = db.query(PMChecklistResponse).filter(PMChecklistResponse.pm_actual_id == actual.id).all()
+        for r in rows:
+            item = db.query(ChecklistTemplateItem).get(r.checklist_template_item_id)
+            checklist.append({
+                "item_id": r.checklist_template_item_id,
+                "text": r.item_text or (item.text if item else "(item removed)"),
+                "required": r.item_required if r.item_required is not None else bool(item and item.required),
+                "checked": bool(r.checked),
+                "result": r.result or ("PASS" if r.checked else "FAIL"),
+                "reading": r.reading,
+                "reading_unit": item.reading_unit if item else None,
+                "critical": bool(item and item.critical),
+                "template_version": r.template_version,
+                "note": r.note,
+                "sequence": item.sequence if item else 0,
+            })
+        checklist.sort(key=lambda c: c["sequence"])
+
+    atts = db.query(PMAttachment).filter(PMAttachment.pm_plan_id == pm_id).order_by(PMAttachment.created_at).all()
+    legacy = _legacy_file(actual)
+
+    return {
+        "plan": {
+            "id": plan.id, "machine_id": plan.machine_id,
+            "machine_number": machine.machine_number if machine else None,
+            "machine_name": machine.machine_name if machine else None,
+            "location": machine.location if machine else None,
+            "critical": bool(machine and machine.critical),
+            "planned_date": str(plan.planned_date) if plan.planned_date else None,
+            "planned_week": plan.planned_week, "month": plan.month, "financial_year": plan.financial_year,
+            "status": plan.status.value if plan.status else None,
+            "assigned_to": plan.assigned_to, "assigned_to_name": _name(db, plan.assigned_to),
+        },
+        "actual": {
+            "actual_date": str(actual.actual_date) if actual.actual_date else None,
+            "remarks": actual.remarks, "delay_reason": actual.delay_reason,
+            "downtime_minutes": actual.downtime_minutes, "delay_days": actual.delay_days,
+            "completion_class": actual.completion_class.value if actual.completion_class else None,
+            "completed_by_name": _name(db, actual.completed_by),
+            "recorded_at": actual.updated_at.isoformat() if actual.updated_at else None,
+        } if actual else None,
+        "completed_by_technician_name": _name(db, plan.completed_by_technician_id),
+        "confirmed_by_name": _name(db, plan.confirmed_by_supervisor_id),
+        "confirmed_at": plan.confirmed_at.isoformat() if plan.confirmed_at else None,
+        "checklist": checklist,
+        "attachments": [
+            {"id": a.id, "filename": a.filename, "content_type": a.content_type, "size_bytes": a.size_bytes,
+             "uploaded_by_name": _name(db, a.uploaded_by),
+             "created_at": a.created_at.isoformat() if a.created_at else None}
+            for a in atts
+        ],
+        "legacy_attachment": (
+            {"filename": os.path.basename(legacy),
+             "content_type": _LEGACY_TYPES.get(os.path.splitext(legacy)[1].lower(), "application/octet-stream")}
+            if legacy else None
+        ),
+    }
+
+
+@router.post("/{pm_id}/attachments")
+async def add_attachments(
+    pm_id: str,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    user: Employee = Depends(EvidenceUploadRoles),
+):
+    """Add more photos/PDFs to a PM at any time (also after it was completed)."""
+    plan = db.query(PMPlan).get(pm_id)
+    if not plan:
+        raise HTTPException(404, "PM plan not found")
+    saved = await _save_evidence(db, pm_id, files, user)
+    if not saved:
+        raise HTTPException(400, "No files received.")
+    db.commit()
+    record_audit(db, action="PM_ATTACHMENT_ADDED", entity_type="PMPlan", entity_id=pm_id, actor_id=user.id,
+                 new_value={"files": [a.filename for a in saved]})
+    return {"success": True, "added": len(saved)}
+
+
+@router.get("/{pm_id}/attachments/{att_id}/file")
+def get_attachment_file(
+    pm_id: str, att_id: str, download: bool = False,
+    db: Session = Depends(get_db), _user: Employee = Depends(get_current_user),
+):
+    a = db.query(PMAttachment).filter(PMAttachment.id == att_id, PMAttachment.pm_plan_id == pm_id).first()
+    if not a:
+        raise HTTPException(404, "Attachment not found")
+    safe_name = a.filename.replace('"', "").replace("\r", "").replace("\n", "")
+    return Response(
+        content=a.data, media_type=a.content_type,
+        headers={
+            "Content-Disposition": f'{"attachment" if download else "inline"}; filename="{safe_name}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@router.delete("/{pm_id}/attachments/{att_id}")
+def delete_attachment(
+    pm_id: str, att_id: str,
+    db: Session = Depends(get_db), user: Employee = Depends(EvidenceDeleteRoles),
+):
+    a = db.query(PMAttachment).filter(PMAttachment.id == att_id, PMAttachment.pm_plan_id == pm_id).first()
+    if not a:
+        raise HTTPException(404, "Attachment not found")
+    name = a.filename
+    db.delete(a)
+    db.commit()
+    record_audit(db, action="PM_ATTACHMENT_DELETED", entity_type="PMPlan", entity_id=pm_id, actor_id=user.id,
+                 old_value={"filename": name})
+    return {"success": True}

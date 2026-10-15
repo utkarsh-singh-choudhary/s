@@ -258,7 +258,7 @@ function PMCard({ plan, machine, done }: { plan: PMPlan; machine?: Machine; done
       {done && <span className="text-xs text-good">✓ Done</span>}
     </div>
   );
-  if (done) return body;
+  if (done) return <Link href={`/pm/${plan.id}`} className="block active:opacity-70">{body}</Link>;
   return (
     <Link href={`/pm/${plan.id}/complete`} className="block active:opacity-70">
       {body}

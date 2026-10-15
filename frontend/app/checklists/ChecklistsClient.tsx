@@ -7,17 +7,43 @@ import { api, ChecklistTemplate, ChecklistItemIn, Machine } from "@/lib/api";
 type EditState = {
   name: string;
   description: string;
+  task_type: string;
+  machine_type: string;
   items: ChecklistItemIn[];
 };
+
+const TASK_TYPES = ["PM", "INSPECTION", "CORRECTIVE", "BREAKDOWN", "CALIBRATION", "OTHER"];
+
+function cleanItems(items: ChecklistItemIn[]): ChecklistItemIn[] {
+  return items
+    .filter((i) => i.text.trim())
+    .map((i) => ({
+      text: i.text.trim(),
+      required: i.required ?? true,
+      requires_reading: !!i.requires_reading,
+      reading_unit: i.requires_reading ? (i.reading_unit || "").trim() || null : null,
+      critical: !!i.critical,
+      evidence_on_fail: !!i.evidence_on_fail,
+    }));
+}
 
 function toEditState(t: ChecklistTemplate): EditState {
   return {
     name: t.name,
     description: t.description || "",
+    task_type: t.task_type || "PM",
+    machine_type: t.machine_type || "",
     items: t.items
       .slice()
       .sort((a, b) => a.sequence - b.sequence)
-      .map((i) => ({ text: i.text, required: i.required })),
+      .map((i) => ({
+        text: i.text,
+        required: i.required,
+        requires_reading: !!i.requires_reading,
+        reading_unit: i.reading_unit || "",
+        critical: !!i.critical,
+        evidence_on_fail: !!i.evidence_on_fail,
+      })),
   };
 }
 
@@ -42,7 +68,7 @@ export default function ChecklistsClient({
   const [assigningId, setAssigningId] = useState<string | null>(null);
   const [assignMachineId, setAssignMachineId] = useState("");
 
-  const [createForm, setCreateForm] = useState<EditState>({ name: "", description: "", items: [] });
+  const [createForm, setCreateForm] = useState<EditState>({ name: "", description: "", task_type: "PM", machine_type: "", items: [] });
 
   const visibleTemplates = showInactive ? templates : templates.filter((t) => t.active);
 
@@ -63,9 +89,11 @@ export default function ChecklistsClient({
       await api.createChecklistTemplate({
         name: createForm.name.trim(),
         description: createForm.description.trim() || undefined,
-        items: createForm.items.filter((i) => i.text.trim()).map((i) => ({ text: i.text.trim(), required: i.required ?? true })),
+        task_type: createForm.task_type,
+        machine_type: createForm.machine_type.trim() || null,
+        items: cleanItems(createForm.items),
       });
-      setCreateForm({ name: "", description: "", items: [] });
+      setCreateForm({ name: "", description: "", task_type: "PM", machine_type: "", items: [] });
       setShowForm(false);
       await refresh();
     } catch (err: any) {
@@ -94,7 +122,9 @@ export default function ChecklistsClient({
       await api.updateChecklistTemplate(id, {
         name: edit.name.trim(),
         description: edit.description.trim() || undefined,
-        items: edit.items.filter((i) => i.text.trim()).map((i) => ({ text: i.text.trim(), required: i.required ?? true })),
+        task_type: edit.task_type,
+        machine_type: edit.machine_type.trim() || null,
+        items: cleanItems(edit.items),
       });
       cancelEdit();
       await refresh();
@@ -184,6 +214,7 @@ export default function ChecklistsClient({
               className="w-full border border-border rounded-sm px-2 py-1.5 text-sm"
             />
           </div>
+          <TypeFields state={createForm} setState={setCreateForm} />
           <ItemsEditor state={createForm} setState={setCreateForm} />
           <button type="submit" disabled={submitting} className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90 disabled:opacity-50">
             {submitting ? "Creating…" : "Create template"}
@@ -215,6 +246,8 @@ export default function ChecklistsClient({
                       className="w-full border border-border rounded-sm px-2 py-1.5 text-sm"
                     />
                   </div>
+                  <TypeFields state={edit} setState={setEdit as (s: EditState) => void} />
+                  <p className="text-xs text-muted">Saving changed items creates a new version. Completed PMs keep the version they used.</p>
                   <ItemsEditor state={edit} setState={setEdit as (s: EditState) => void} />
                   <div className="flex gap-2">
                     <button
@@ -236,6 +269,9 @@ export default function ChecklistsClient({
                       <div className="font-medium text-sm">
                         {t.name} {!t.active && <span className="status-pill bg-gray-100 text-muted ml-1">INACTIVE</span>}
                       </div>
+                      <div className="text-xs text-muted">
+                        {t.task_type || "PM"} · {t.machine_type ? `Machine type: ${t.machine_type}` : "All machine types"} · v{t.version ?? 1}
+                      </div>
                       {t.description && <div className="text-xs text-muted">{t.description}</div>}
                     </div>
                   </div>
@@ -247,6 +283,9 @@ export default function ChecklistsClient({
                         <li key={item.id}>
                           {item.text}
                           {item.required && <span className="text-bad ml-1">*</span>}
+                          {item.requires_reading && <span className="text-xs text-muted ml-1">[reading{item.reading_unit ? ` ${item.reading_unit}` : ""}]</span>}
+                          {item.critical && <span className="status-pill bg-red-100 text-bad ml-1">CRITICAL</span>}
+                          {item.evidence_on_fail && <span className="text-xs text-muted ml-1">[photo on fail]</span>}
                         </li>
                       ))}
                   </ol>
@@ -309,41 +348,86 @@ export default function ChecklistsClient({
   );
 }
 
+function TypeFields({ state, setState }: { state: EditState; setState: (s: EditState) => void }) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <div>
+        <label className="text-xs text-muted block mb-1">Task type</label>
+        <select
+          value={state.task_type}
+          onChange={(e) => setState({ ...state, task_type: e.target.value })}
+          className="w-full border border-border rounded-sm px-2 py-1.5 text-sm"
+        >
+          {TASK_TYPES.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="text-xs text-muted block mb-1">Machine type (blank = all)</label>
+        <input
+          value={state.machine_type}
+          onChange={(e) => setState({ ...state, machine_type: e.target.value })}
+          placeholder="e.g. CNC, Compressor"
+          className="w-full border border-border rounded-sm px-2 py-1.5 text-sm"
+        />
+      </div>
+    </div>
+  );
+}
+
 function ItemsEditor({ state, setState }: { state: EditState; setState: (s: EditState) => void }) {
+  function patch(idx: number, p: Partial<ChecklistItemIn>) {
+    const items = state.items.slice();
+    items[idx] = { ...items[idx], ...p };
+    setState({ ...state, items });
+  }
   return (
     <div className="space-y-2">
       <label className="text-xs text-muted block">Checklist items</label>
       {state.items.map((item, idx) => (
-        <div key={idx} className="flex items-center gap-1.5">
-          <input
-            value={item.text}
-            onChange={(e) => {
-              const items = state.items.slice();
-              items[idx] = { ...items[idx], text: e.target.value };
-              setState({ ...state, items });
-            }}
-            placeholder={`Step ${idx + 1}`}
-            className="flex-1 border border-border rounded-sm px-2 py-1 text-xs"
-          />
-          <label className="text-xs text-muted flex items-center gap-1 whitespace-nowrap">
+        <div key={idx} className="border border-border rounded-sm p-2 space-y-1.5">
+          <div className="flex items-center gap-1.5">
             <input
-              type="checkbox"
-              checked={item.required ?? true}
-              onChange={(e) => {
-                const items = state.items.slice();
-                items[idx] = { ...items[idx], required: e.target.checked };
-                setState({ ...state, items });
-              }}
+              value={item.text}
+              onChange={(e) => patch(idx, { text: e.target.value })}
+              placeholder={`Step ${idx + 1}`}
+              className="flex-1 border border-border rounded-sm px-2 py-1 text-xs"
             />
-            Required
-          </label>
-          <button
-            type="button"
-            onClick={() => setState({ ...state, items: state.items.filter((_, i) => i !== idx) })}
-            className="text-xs text-bad hover:underline"
-          >
-            Remove
-          </button>
+            <button
+              type="button"
+              onClick={() => setState({ ...state, items: state.items.filter((_, i) => i !== idx) })}
+              className="text-xs text-bad hover:underline"
+            >
+              Remove
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={item.required ?? true} onChange={(e) => patch(idx, { required: e.target.checked })} />
+              Required
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={!!item.critical} onChange={(e) => patch(idx, { critical: e.target.checked })} />
+              Critical
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={!!item.evidence_on_fail} onChange={(e) => patch(idx, { evidence_on_fail: e.target.checked })} />
+              Photo on fail
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={!!item.requires_reading} onChange={(e) => patch(idx, { requires_reading: e.target.checked })} />
+              Needs reading
+            </label>
+            {item.requires_reading && (
+              <input
+                value={item.reading_unit || ""}
+                onChange={(e) => patch(idx, { reading_unit: e.target.value })}
+                placeholder="unit (bar, °C…)"
+                className="border border-border rounded-sm px-1.5 py-0.5 w-24"
+              />
+            )}
+          </div>
         </div>
       ))}
       <button

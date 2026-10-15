@@ -33,6 +33,12 @@ DEFAULTS: dict[str, Any] = {
     "labor_hour_cost": 300,
     "downtime_minute_cost": 20,
     "reminder_cc_emails": [],
+    "currency": "INR",
+    "stock_adjustment_approval_value": 10000,   # stock adjustments worth more than this need a manager
+    "cost_approval_manager_threshold": 50000,   # external/other costs above this need a manager to approve
+    "recurrence_window_days": 30,               # same machine failing again within this many days = repeat breakdown
+    "mtbf_min_failures": 3,                     # fewer failures than this = not enough data for MTBF
+    "alert_emails_critical_breakdown": True,    # email managers/admins when a HIGH/CRITICAL breakdown is reported
 }
 
 DESCRIPTIONS: dict[str, str] = {
@@ -43,6 +49,12 @@ DESCRIPTIONS: dict[str, str] = {
     "week_start_offset_days": "Day-of-month that band W1 starts on (normally 1).",
     "labor_hour_cost": "Cost per labor hour (currency units) used to estimate work-order labor cost.",
     "downtime_minute_cost": "Cost per minute of production downtime (currency units) used to estimate downtime cost.",
+    "currency": "Currency code shown with every cost (INR, USD, ...).",
+    "stock_adjustment_approval_value": "Stock adjustments worth more than this (quantity x unit cost) need a manager or admin.",
+    "cost_approval_manager_threshold": "External services / other costs above this amount need a manager or admin to approve.",
+    "recurrence_window_days": "A breakdown on the same machine within this many days of the previous one counts as a repeat.",
+    "mtbf_min_failures": "Minimum number of failures before MTBF is shown (below this there is not enough data).",
+    "alert_emails_critical_breakdown": "Email managers and admins as soon as a HIGH or CRITICAL breakdown is reported.",
     "reminder_cc_emails": "Extra email addresses (plant head, shared inbox, etc.) that receive a copy of every PM reminder and escalation, even if they are not employees.",
 }
 

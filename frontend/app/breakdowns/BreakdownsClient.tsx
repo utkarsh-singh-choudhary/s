@@ -1,222 +1,152 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { getUser } from "@/lib/auth";
-import { api, BreakdownEvent, Machine, ReliabilityRow } from "@/lib/api";
+import {
+  api, BreakdownRow, BreakdownSummary, FAILURE_CATEGORIES, IMPACTS, Machine, Paged, SEVERITIES,
+} from "@/lib/api";
+import { defaultFilters, FilterBar, filterParams, FilterState } from "@/components/FilterBar";
+import { Pagination } from "@/components/Pagination";
+import { Pill } from "@/components/Pill";
+import { KpiCard } from "@/components/KpiCard";
+import { fmtDateTime, fmtMinutes, localInputToApi, nowLocalInput } from "@/lib/format";
 
-function toLocalInputValue(iso: string | null | undefined) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
+const STATUSES = ["REPORTED", "UNDER_DIAGNOSIS", "REPAIR_IN_PROGRESS", "AWAITING_VERIFICATION", "RESTORED", "CLOSED"];
 
 export default function BreakdownsClient({
-  initialBreakdowns,
-  reliability,
-  machines,
-}: {
-  initialBreakdowns: BreakdownEvent[];
-  reliability: ReliabilityRow[];
-  machines: Machine[];
-}) {
-  const [breakdowns, setBreakdowns] = useState(initialBreakdowns);
-  const [showForm, setShowForm] = useState(false);
-  const [machineId, setMachineId] = useState(machines[0]?.id || "");
-  const [cause, setCause] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [resolvingId, setResolvingId] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
+  machines, initialMachineId, initialStatus,
+}: { machines: Machine[]; initialMachineId: string; initialStatus: string }) {
+  const [filters, setFilters] = useState<FilterState>(defaultFilters({ date_basis: "incident" }));
+  const [status, setStatus] = useState(initialStatus);
+  const [severity, setSeverity] = useState("");
+  const [category, setCategory] = useState("");
+  const [machineId, setMachineId] = useState(initialMachineId);
   const [openOnly, setOpenOnly] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editState, setEditState] = useState<{
-    breakdown_at: string;
-    resumed_at: string;
-    cause: string;
-    action_taken: string;
-    resulted_in_scrap_or_replace: boolean;
-  } | null>(null);
+  const [data, setData] = useState<Paged<BreakdownRow, BreakdownSummary> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [role, setRole] = useState<string | undefined>();
 
-  const me = getUser();
-  const canEdit = me?.role === "SUPERVISOR" || me?.role === "MANAGER" || me?.role === "ADMIN";
+  const [showForm, setShowForm] = useState(false);
+  const extra = { status, severity, category, machine_id: machineId, open_only: openOnly };
+  const params = { ...filterParams(filters), ...extra };
 
-  const machineById = new Map(machines.map((m) => [m.id, m]));
-  const openCount = breakdowns.filter((b) => b.is_open).length;
+  useEffect(() => setRole(getUser()?.role), []);
 
-  const filteredBreakdowns = breakdowns.filter((b) => {
-    if (openOnly && !b.is_open) return false;
-    if (!search.trim()) return true;
-    const q = search.trim().toLowerCase();
-    const machine = machineById.get(b.machine_id);
-    return (
-      (machine?.machine_number || "").toLowerCase().includes(q) ||
-      (machine?.machine_name || "").toLowerCase().includes(q) ||
-      (b.cause || "").toLowerCase().includes(q)
-    );
-  });
-
-  async function refresh() {
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
-      const rows = await api.breakdowns();
-      setBreakdowns(rows);
-    } catch {
-      // keep existing list on refresh failure
-    }
-  }
-
-  async function submitReport(e: React.FormEvent) {
-    e.preventDefault();
-    if (!machineId) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api.reportBreakdown({ machine_id: machineId, breakdown_at: new Date().toISOString(), cause: cause || undefined });
-      setCause("");
-      setShowForm(false);
-      await refresh();
-    } catch (err: any) {
-      setError(err.message || "Failed to report breakdown");
+      setData(await api.searchBreakdowns(params));
+      setError(null);
+    } catch (e: any) {
+      setError(e.message);
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(params)]);
 
-  async function submitResolve(eventId: string, actionTaken: string, scrap: boolean) {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api.resolveBreakdown(eventId, { resumed_at: new Date().toISOString(), action_taken: actionTaken || undefined, resulted_in_scrap_or_replace: scrap });
-      setResolvingId(null);
-      await refresh();
-    } catch (err: any) {
-      setError(err.message || "Failed to resolve breakdown");
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  useEffect(() => { load(); }, [load]);
 
-  function startEdit(b: BreakdownEvent) {
-    setEditingId(b.id);
-    setEditState({
-      breakdown_at: toLocalInputValue(b.breakdown_at),
-      resumed_at: toLocalInputValue(b.resumed_at),
-      cause: b.cause || "",
-      action_taken: b.action_taken || "",
-      resulted_in_scrap_or_replace: b.resulted_in_scrap_or_replace,
-    });
-    setResolvingId(null);
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditState(null);
-  }
-
-  async function saveEdit(eventId: string) {
-    if (!editState) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api.updateBreakdown(eventId, {
-        breakdown_at: editState.breakdown_at ? new Date(editState.breakdown_at).toISOString() : undefined,
-        resumed_at: editState.resumed_at ? new Date(editState.resumed_at).toISOString() : undefined,
-        cause: editState.cause,
-        action_taken: editState.action_taken,
-        resulted_in_scrap_or_replace: editState.resulted_in_scrap_or_replace,
-      });
-      cancelEdit();
-      await refresh();
-    } catch (err: any) {
-      setError(err.message || "Failed to update breakdown");
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  const canExport = role === "ADMIN" || role === "MANAGER" || role === "SUPERVISOR";
+  const canReport = !!role && role !== "VIEWER";
+  const s = data?.summary;
+  const reset = (patch: () => void) => { patch(); setFilters((f) => ({ ...f, page: 1 })); };
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-6 space-y-5">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-lg font-semibold text-ink">Breakdowns</h1>
-          <p className="text-sm text-muted">
-            {breakdowns.length} logged, <span className={openCount ? "text-bad" : ""}>{openCount} currently down</span>.
-          </p>
+          <p className="text-sm text-muted">Every incident from report to root cause, corrective action and closure.</p>
         </div>
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="text-sm px-3 py-1.5 rounded-sm bg-ink text-white hover:opacity-90"
-        >
-          {showForm ? "Cancel" : "Report breakdown"}
-        </button>
+        {canReport && (
+          <button onClick={() => setShowForm((v) => !v)} className="text-sm px-3 py-1.5 rounded-sm bg-ink text-white hover:opacity-90">
+            {showForm ? "Cancel" : "Report breakdown"}
+          </button>
+        )}
       </div>
+
+      {showForm && <ReportForm machines={machines} defaultMachine={machineId} onDone={() => { setShowForm(false); load(); }} />}
+
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <KpiCard label="Matching" value={s?.total ?? "—"} />
+        <KpiCard label="Machine still down" value={s?.open ?? "—"} tone={s && s.open > 0 ? "bad" : undefined} />
+        <KpiCard label="Restored" value={s?.restored ?? "—"} />
+        <KpiCard label="Closed" value={s?.closed ?? "—"} />
+        <KpiCard label="Repeat failures" value={s?.recurring ?? "—"} tone={s && s.recurring > 0 ? "warn" : undefined} />
+        <KpiCard label="Downtime" value={s ? `${s.downtime_hours} h` : "—"} />
+      </div>
+
+      <FilterBar
+        value={filters}
+        onChange={setFilters}
+        basisOptions={[
+          { value: "incident", label: "Incident (breakdown) date" },
+          { value: "restored", label: "Restoration date" },
+          { value: "closed", label: "Closed date" },
+        ]}
+        sortOptions={[
+          { value: "newest", label: "Newest first" }, { value: "oldest", label: "Oldest first" },
+          { value: "downtime", label: "Longest downtime" }, { value: "severity", label: "Severity" },
+          { value: "machine", label: "Machine" },
+        ]}
+        canExport={canExport}
+        onExport={(fmt) => api.exportBreakdowns({ ...filterParams(filters), ...extra, page: undefined, page_size: undefined }, fmt)}
+        rangeLabel={data?.range}
+      >
+        <Select label="Status" value={status} onChange={(v) => reset(() => setStatus(v))} options={STATUSES} />
+        <Select label="Severity" value={severity} onChange={(v) => reset(() => setSeverity(v))} options={[...SEVERITIES]} />
+        <Select label="Category" value={category} onChange={(v) => reset(() => setCategory(v))} options={[...FAILURE_CATEGORIES]} />
+        <div>
+          <label className="text-xs text-muted block mb-1">Machine</label>
+          <select value={machineId} onChange={(e) => reset(() => setMachineId(e.target.value))} className="border border-border rounded-sm px-2 py-1.5 text-sm max-w-[180px]">
+            <option value="">All</option>
+            {machines.map((m) => <option key={m.id} value={m.id}>{m.machine_number}</option>)}
+          </select>
+        </div>
+        <label className="text-sm flex items-center gap-1.5 pb-1.5">
+          <input type="checkbox" checked={openOnly} onChange={(e) => reset(() => setOpenOnly(e.target.checked))} /> Still down
+        </label>
+      </FilterBar>
 
       {error && <div className="text-sm text-bad">{error}</div>}
 
-      {showForm && (
-        <form onSubmit={submitReport} className="kpi-card space-y-3 max-w-lg">
-          <div className="font-medium text-sm">Report a new breakdown</div>
-          <div>
-            <label className="text-xs text-muted block mb-1">Machine</label>
-            <select
-              value={machineId}
-              onChange={(e) => setMachineId(e.target.value)}
-              className="w-full border border-border rounded-sm px-2 py-1.5 text-sm"
-            >
-              {machines.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.machine_number} — {m.machine_name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-muted block mb-1">Cause (optional)</label>
-            <input
-              value={cause}
-              onChange={(e) => setCause(e.target.value)}
-              className="w-full border border-border rounded-sm px-2 py-1.5 text-sm"
-              placeholder="e.g. bearing failure"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={submitting}
-            className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90 disabled:opacity-50"
-          >
-            {submitting ? "Submitting…" : "Log breakdown (now)"}
-          </button>
-        </form>
-      )}
-
-      <div className="kpi-card !p-0 overflow-hidden">
-        <div className="px-4 py-3 border-b border-border font-medium text-sm">Reliability by machine (MTBF / MTTR)</div>
-        {reliability.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-muted">No breakdown history yet.</div>
+      <div className={`kpi-card !p-0 overflow-x-auto ${loading ? "opacity-60" : ""}`}>
+        {data && data.items.length === 0 ? (
+          <div className="px-4 py-6 text-sm text-muted">No breakdowns match these filters.</div>
         ) : (
           <table className="data-table">
             <thead>
               <tr>
-                <th>Machine</th>
-                <th>Breakdowns</th>
-                <th>Open</th>
-                <th>MTBF (hrs)</th>
-                <th>MTTR (hrs)</th>
+                <th>ID</th><th>Machine</th><th>Breakdown time</th><th>Failure</th><th>Severity</th>
+                <th>Status</th><th>Root cause</th><th>Downtime</th><th>Restored</th>
               </tr>
             </thead>
             <tbody>
-              {reliability.map((r) => (
-                <tr key={r.machine_id}>
-                  <td>
-                    <Link href={`/machines/${r.machine_id}`} className="text-accent hover:underline">
-                      {r.machine_number} — {r.machine_name}
-                    </Link>
+              {(data?.items || []).map((b) => (
+                <tr key={b.id}>
+                  <td className="font-mono text-xs whitespace-nowrap">
+                    <Link href={`/breakdowns/${b.id}`} className="text-accent hover:underline">{b.bd_number || b.id.slice(0, 8)}</Link>
+                    {b.recurring && <span className="ml-1 status-pill bg-amber-50 text-amber-800" title="Repeat failure">repeat</span>}
                   </td>
-                  <td>{r.breakdown_count}</td>
-                  <td className={r.open_breakdowns ? "text-bad font-medium" : ""}>{r.open_breakdowns}</td>
-                  <td>{r.mtbf_hours != null ? r.mtbf_hours.toFixed(1) : "—"}</td>
-                  <td>{r.mttr_hours != null ? r.mttr_hours.toFixed(1) : "—"}</td>
+                  <td>
+                    <Link href={`/machines/${b.machine_id}`} className="hover:underline">{b.machine_number}</Link>
+                    <div className="text-xs text-muted">{b.machine_name}</div>
+                  </td>
+                  <td className="whitespace-nowrap">{fmtDateTime(b.breakdown_at)}</td>
+                  <td>
+                    <div>{b.failure_mode || b.cause || "—"}</div>
+                    <div className="text-xs text-muted">{b.failure_category ? b.failure_category : ""}</div>
+                  </td>
+                  <td><Pill value={b.severity} /></td>
+                  <td><Pill value={b.status} /></td>
+                  <td className="text-xs">
+                    {b.root_cause ? <><div className="max-w-[200px] truncate" title={b.root_cause}>{b.root_cause}</div><Pill value={b.rca_status} /></> : <Pill value={b.rca_status} />}
+                  </td>
+                  <td className="whitespace-nowrap">{fmtMinutes(b.downtime_minutes)}{b.is_open && <span className="text-bad text-xs"> (ongoing)</span>}</td>
+                  <td className="whitespace-nowrap">{b.resumed_at ? fmtDateTime(b.resumed_at) : "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -224,167 +154,125 @@ export default function BreakdownsClient({
         )}
       </div>
 
-      <div className="kpi-card !p-0 overflow-hidden">
-        <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
-          <div className="font-medium text-sm mr-auto">Breakdown Log</div>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search machine or cause…"
-            className="border border-border rounded-sm px-2 py-1 text-xs w-56"
-          />
-          <label className="text-xs flex items-center gap-1.5">
-            <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />
-            Open only
-          </label>
-        </div>
-        {filteredBreakdowns.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-muted">No breakdowns match this filter.</div>
-        ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Machine</th>
-                <th>Started</th>
-                <th>Resumed</th>
-                <th>Cause</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredBreakdowns.map((b) => {
-                const machine = machineById.get(b.machine_id);
-                if (editingId === b.id && editState) {
-                  return (
-                    <tr key={b.id}>
-                      <td colSpan={6}>
-                        <div className="flex flex-wrap items-end gap-2 py-1">
-                          <div>
-                            <label className="text-xs text-muted block mb-0.5">Started</label>
-                            <input type="datetime-local" value={editState.breakdown_at}
-                              onChange={(e) => setEditState({ ...editState, breakdown_at: e.target.value })}
-                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs" />
-                          </div>
-                          <div>
-                            <label className="text-xs text-muted block mb-0.5">Resumed</label>
-                            <input type="datetime-local" value={editState.resumed_at}
-                              onChange={(e) => setEditState({ ...editState, resumed_at: e.target.value })}
-                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs" />
-                          </div>
-                          <div>
-                            <label className="text-xs text-muted block mb-0.5">Cause</label>
-                            <input value={editState.cause}
-                              onChange={(e) => setEditState({ ...editState, cause: e.target.value })}
-                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs w-32" />
-                          </div>
-                          <div>
-                            <label className="text-xs text-muted block mb-0.5">Action taken</label>
-                            <input value={editState.action_taken}
-                              onChange={(e) => setEditState({ ...editState, action_taken: e.target.value })}
-                              className="border border-border rounded-sm px-1.5 py-0.5 text-xs w-32" />
-                          </div>
-                          <label className="text-xs flex items-center gap-1">
-                            <input type="checkbox" checked={editState.resulted_in_scrap_or_replace}
-                              onChange={(e) => setEditState({ ...editState, resulted_in_scrap_or_replace: e.target.checked })} />
-                            Scrap
-                          </label>
-                          <button disabled={submitting} onClick={() => saveEdit(b.id)}
-                            className="text-xs text-good hover:underline disabled:opacity-50">Save</button>
-                          <button onClick={cancelEdit} className="text-xs text-muted hover:underline">Cancel</button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                }
-                return (
-                  <tr key={b.id}>
-                    <td>
-                      <Link href={`/machines/${b.machine_id}`} className="text-accent hover:underline">
-                        {machine ? machine.machine_number : b.machine_id.slice(0, 8)}
-                      </Link>
-                    </td>
-                    <td>{new Date(b.breakdown_at).toLocaleString()}</td>
-                    <td>{b.resumed_at ? new Date(b.resumed_at).toLocaleString() : "—"}</td>
-                    <td>{b.cause || "—"}</td>
-                    <td>
-                      {b.is_open ? (
-                        <span className="status-pill bg-red-50 text-bad">DOWN</span>
-                      ) : (
-                        <span className="status-pill bg-green-50 text-good">RESOLVED</span>
-                      )}
-                    </td>
-                    <td>
-                      {resolvingId === b.id ? (
-                        <ResolveInline
-                          submitting={submitting}
-                          onCancel={() => setResolvingId(null)}
-                          onSubmit={(action, scrap) => submitResolve(b.id, action, scrap)}
-                        />
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          {b.is_open && (
-                            <button onClick={() => setResolvingId(b.id)} className="text-xs text-accent hover:underline">
-                              Mark resolved
-                            </button>
-                          )}
-                          {b.is_open && (
-                            <Link href={`/work-orders?machine_id=${b.machine_id}`} className="text-xs text-muted hover:underline">
-                              Raise WO
-                            </Link>
-                          )}
-                          {canEdit && (
-                            <button onClick={() => startEdit(b)} className="text-xs text-muted hover:underline">
-                              Edit
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
+      {data && (
+        <Pagination page={data.page} pages={data.pages} total={data.total} pageSize={data.page_size}
+          onPage={(p) => setFilters((f) => ({ ...f, page: p }))}
+          onPageSize={(n) => setFilters((f) => ({ ...f, page_size: n, page: 1 }))} />
+      )}
     </div>
   );
 }
 
-function ResolveInline({
-  submitting,
-  onCancel,
-  onSubmit,
-}: {
-  submitting: boolean;
-  onCancel: () => void;
-  onSubmit: (actionTaken: string, scrap: boolean) => void;
-}) {
-  const [action, setAction] = useState("");
-  const [scrap, setScrap] = useState(false);
+function Select({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: string[] }) {
   return (
-    <div className="flex items-center gap-1.5">
-      <input
-        value={action}
-        onChange={(e) => setAction(e.target.value)}
-        placeholder="Action taken"
-        className="border border-border rounded-sm px-1.5 py-0.5 text-xs w-32"
-      />
-      <label className="text-xs flex items-center gap-1">
-        <input type="checkbox" checked={scrap} onChange={(e) => setScrap(e.target.checked)} />
-        Scrap
-      </label>
-      <button
-        disabled={submitting}
-        onClick={() => onSubmit(action, scrap)}
-        className="text-xs text-good hover:underline disabled:opacity-50"
-      >
-        Save
-      </button>
-      <button onClick={onCancel} className="text-xs text-muted hover:underline">
-        Cancel
-      </button>
+    <div>
+      <label className="text-xs text-muted block mb-1">{label}</label>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="border border-border rounded-sm px-2 py-1.5 text-sm">
+        <option value="">All</option>
+        {options.map((o) => <option key={o} value={o}>{o.replace(/_/g, " ")}</option>)}
+      </select>
     </div>
+  );
+}
+
+function ReportForm({ machines, defaultMachine, onDone }: { machines: Machine[]; defaultMachine: string; onDone: () => void }) {
+  const [machineId, setMachineId] = useState(defaultMachine || machines[0]?.id || "");
+  const [at, setAt] = useState(nowLocalInput());
+  const [category, setCategory] = useState("");
+  const [mode, setMode] = useState("");
+  const [severity, setSeverity] = useState("MEDIUM");
+  const [impact, setImpact] = useState("STOPPED");
+  const [symptom, setSymptom] = useState("");
+  const [temp, setTemp] = useState("");
+  const [makeWo, setMakeWo] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [existing, setExisting] = useState<{ id: string; number: string } | null>(null);
+
+  async function submit(e: React.FormEvent, force = false) {
+    e.preventDefault();
+    if (!machineId) return;
+    setBusy(true); setError(null); setExisting(null);
+    try {
+      const r = await api.reportBreakdownFull({
+        machine_id: machineId, breakdown_at: localInputToApi(at), failure_category: category || undefined,
+        failure_mode: mode.trim() || undefined, severity, production_impact: impact || undefined,
+        cause: symptom.trim() || undefined, temporary_action: temp.trim() || undefined,
+        create_work_order: makeWo, force,
+      });
+      window.location.href = `/breakdowns/${r.id}`;
+      onDone();
+    } catch (err: any) {
+      setError(err.message);
+      // the server tells us which incident is already open for this machine
+      const m = /\((BD-[\d-]+)\)/.exec(err.message || "");
+      if (m) setExisting({ id: "", number: m[1] });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const inp = "w-full border border-border rounded-sm px-2 py-1.5 text-sm";
+  return (
+    <form onSubmit={submit} className="kpi-card space-y-3 max-w-3xl">
+      <div className="font-medium text-sm">Report a breakdown</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-muted block mb-1">Machine *</label>
+          <select value={machineId} onChange={(e) => setMachineId(e.target.value)} className={inp} required>
+            {machines.map((m) => <option key={m.id} value={m.id}>{m.machine_number} — {m.machine_name}{m.critical ? " ★" : ""}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">When did it stop? *</label>
+          <input type="datetime-local" value={at} max={nowLocalInput()} onChange={(e) => setAt(e.target.value)} className={inp} required />
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">Severity *</label>
+          <select value={severity} onChange={(e) => setSeverity(e.target.value)} className={inp}>
+            {SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">Production impact</label>
+          <select value={impact} onChange={(e) => setImpact(e.target.value)} className={inp}>
+            {IMPACTS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">Failure category</label>
+          <select value={category} onChange={(e) => setCategory(e.target.value)} className={inp}>
+            <option value="">Not sure yet</option>
+            {FAILURE_CATEGORIES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted block mb-1">Failure mode (what failed)</label>
+          <input value={mode} onChange={(e) => setMode(e.target.value)} placeholder="e.g. Bearing seized" className={inp} />
+        </div>
+      </div>
+      <div>
+        <label className="text-xs text-muted block mb-1">What was seen / heard (symptom)</label>
+        <textarea value={symptom} onChange={(e) => setSymptom(e.target.value)} rows={2} className={inp} placeholder="Observation only — the root cause is investigated later" />
+      </div>
+      <div>
+        <label className="text-xs text-muted block mb-1">Temporary action taken (if any)</label>
+        <input value={temp} onChange={(e) => setTemp(e.target.value)} className={inp} />
+      </div>
+      <label className="text-sm flex items-center gap-2"><input type="checkbox" checked={makeWo} onChange={(e) => setMakeWo(e.target.checked)} /> Also create a repair work order</label>
+      {error && (
+        <div className="text-sm text-bad space-y-1">
+          <div>{error}</div>
+          {existing && (
+            <button type="button" onClick={(e) => submit(e as any, true)} className="text-accent underline text-xs">
+              This is a separate failure — report it anyway
+            </button>
+          )}
+        </div>
+      )}
+      <button type="submit" disabled={busy} className="text-sm px-3 py-1.5 rounded-sm bg-accent text-white hover:opacity-90 disabled:opacity-50">
+        {busy ? "Saving…" : "Report breakdown"}
+      </button>
+    </form>
   );
 }

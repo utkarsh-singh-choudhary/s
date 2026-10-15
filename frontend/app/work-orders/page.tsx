@@ -11,13 +11,13 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-export default async function WorkOrdersPage({ searchParams }: { searchParams: { machine_id?: string } }) {
-  const machineId = searchParams.machine_id;
-  const [workOrders, machines, employees] = await Promise.all([
-    safe(() => api.workOrders(machineId ? { machine_id: machineId } : {}), []),
+export default async function WorkOrdersPage({ searchParams }: { searchParams: { machine_id?: string; status?: string; priority?: string } }) {
+  const [machines, people] = await Promise.all([
     safe(() => api.machines(), []),
-    safe(() => api.employees(), []),
+    safe(() => api.directory(), []),
   ]);
-
-  return <WorkOrdersClient initialWorkOrders={workOrders} machines={machines} employees={employees} machineFilterId={machineId} />;
+  return (
+    <WorkOrdersClient machines={machines} people={people} initialMachineId={searchParams.machine_id || ""}
+      initialStatus={searchParams.status || ""} initialPriority={searchParams.priority || ""} />
+  );
 }

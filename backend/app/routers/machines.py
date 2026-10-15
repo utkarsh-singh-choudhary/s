@@ -1,3 +1,5 @@
+import base64
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -29,6 +31,7 @@ class MachineIn(BaseModel):
     remarks: str | None = None
     critical: bool = False
     checklist_template_id: str | None = None
+    machine_type: str | None = None
 
 
 class MachineUpdate(BaseModel):
@@ -40,6 +43,7 @@ class MachineUpdate(BaseModel):
     remarks: str | None = None
     critical: bool | None = None
     checklist_template_id: str | None = None
+    machine_type: str | None = None
 
 
 @router.get("", response_model=list[MachineOut])
@@ -71,6 +75,7 @@ def create_machine(
         remarks=payload.remarks,
         critical=payload.critical,
         checklist_template_id=payload.checklist_template_id,
+        machine_type=payload.machine_type,
     )
     db.add(machine)
     db.commit()
@@ -180,38 +185,58 @@ def get_machine_health_score(machine_id: str, db: Session = Depends(get_db)):
     return compute_health_score(db, machine)
 
 
-@router.get("/{machine_id}/qrcode")
-def get_machine_qrcode(machine_id: str, db: Session = Depends(get_db)):
+@router.get("/qrcodes/sheet")
+def get_machine_qrcode_sheet(db: Session = Depends(get_db), base: str | None = None, active_only: bool = True):
     """
-    PNG QR code for this machine, to print and stick on the physical
-    machine. Scanning it opens `{APP_URL}/m/{machine_id}` on whatever
-    device scanned it - the frontend's responsive mobile view.
-    """
-    machine = db.query(Machine).get(machine_id)
-    if not machine:
-        return Response(status_code=404)
-    png_bytes = generate_machine_qr_png(machine_id)
-    return Response(content=png_bytes, media_type="image/png")
-
-
-@router.get("/qrcodes/batch")
-def get_machine_qrcode_links(db: Session = Depends(get_db), active_only: bool = True):
-    """
-    Bulk listing of machine_id -> deep link + qrcode image URL, for a
-    frontend "print all labels" page (one QR-per-machine sheet) rather
-    than fetching one image at a time.
+    Everything the "print all labels" page needs in one call: per machine,
+    the number, name, location, deep link and the QR itself as a data URI.
+    (Declared before the /{machine_id}/... routes on purpose.)
     """
     q = db.query(Machine)
     if active_only:
         q = q.filter(Machine.active.is_(True))
-    machines = q.order_by(Machine.machine_number).all()
+    out = []
+    for m in q.order_by(Machine.machine_number).all():
+        png = generate_machine_qr_png(m.id, base)
+        out.append({
+            "machine_id": m.id,
+            "machine_number": m.machine_number,
+            "machine_name": m.machine_name,
+            "location": m.location,
+            "deep_link": machine_deep_link(m.id, base),
+            "qr_data_uri": "data:image/png;base64," + base64.b64encode(png).decode(),
+        })
+    return out
+
+
+@router.get("/qrcodes/batch")
+def get_machine_qrcode_links(db: Session = Depends(get_db), active_only: bool = True, base: str | None = None):
+    q = db.query(Machine)
+    if active_only:
+        q = q.filter(Machine.active.is_(True))
     return [
         {
             "machine_id": m.id,
             "machine_number": m.machine_number,
             "machine_name": m.machine_name,
-            "deep_link": machine_deep_link(m.id),
+            "deep_link": machine_deep_link(m.id, base),
             "qrcode_url": f"/api/machines/{m.id}/qrcode",
         }
-        for m in machines
+        for m in q.order_by(Machine.machine_number).all()
     ]
+
+
+@router.get("/{machine_id}/qrcode")
+def get_machine_qrcode(machine_id: str, base: str | None = None, db: Session = Depends(get_db)):
+    """
+    PNG QR code for this machine. Scanning it opens `{frontend}/m/{machine_id}`.
+    `base` is the frontend origin the page is being viewed on (validated
+    against APP_URL / CORS_ORIGINS), so labels work even if APP_URL was never
+    set on the server. This route needs a login like the rest of the machines
+    API - the frontend fetches it with the token and shows it as a blob.
+    """
+    machine = db.query(Machine).get(machine_id)
+    if not machine:
+        raise HTTPException(404, "Machine not found")
+    return Response(content=generate_machine_qr_png(machine_id, base), media_type="image/png",
+                    headers={"Cache-Control": "private, max-age=300"})

@@ -11,7 +11,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-export default async function SparePartsPage() {
-  const parts = await safe(() => api.spareParts(), []);
-  return <SparePartsClient initialParts={parts} />;
+export default async function SparePartsPage({ searchParams }: { searchParams: { low_stock_only?: string } }) {
+  const machines = await safe(() => api.machines(), []);
+  return <SparePartsClient machines={machines} initialLowOnly={searchParams.low_stock_only === "true"} />;
 }

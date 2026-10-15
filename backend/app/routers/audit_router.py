@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.audit import verify_signature
 from app.core.auth import require_roles
 from app.models.models import AuditLog, Employee, Role
 
@@ -55,6 +56,26 @@ def list_audit_logs(
     actor_ids = {l.actor_id for l in logs if l.actor_id}
     names = {e.id: e.name for e in db.query(Employee).filter(Employee.id.in_(actor_ids)).all()} if actor_ids else {}
     return [_serialize(l, names) for l in logs]
+
+
+@router.get("/verify")
+def verify_audit_log(db: Session = Depends(get_db), _user=Depends(require_roles(Role.ADMIN))):
+    """Recompute every row's signature: intact / changed since written / written before signing existed."""
+    intact = tampered = unsigned = 0
+    mismatches = []
+    for log in db.query(AuditLog).order_by(AuditLog.created_at).yield_per(500):
+        ok = verify_signature(log)
+        if ok is None:
+            unsigned += 1
+        elif ok:
+            intact += 1
+        else:
+            tampered += 1
+            if len(mismatches) < 50:
+                mismatches.append({"id": log.id, "action": log.action, "entity_type": log.entity_type,
+                                   "entity_id": log.entity_id, "created_at": log.created_at})
+    return {"total": intact + tampered + unsigned, "intact": intact, "tampered": tampered,
+            "unsigned_legacy": unsigned, "mismatches": mismatches}
 
 
 @router.get("/entity-types")

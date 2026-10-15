@@ -1,7 +1,8 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
-import { api, AuditLogEntry } from "@/lib/api";
+import { api, AuditLogEntry, AuditVerify } from "@/lib/api";
+import { fmtDateTime } from "@/lib/format";
 
 export default function AuditLogPage() {
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
@@ -9,6 +10,21 @@ export default function AuditLogPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [verify, setVerify] = useState<AuditVerify | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
+  async function runVerify() {
+    setVerifying(true);
+    setVerifyError(null);
+    try {
+      setVerify(await api.verifyAudit());
+    } catch (e: any) {
+      setVerifyError(e.message || "Verification failed");
+    } finally {
+      setVerifying(false);
+    }
+  }
 
   const [entityType, setEntityType] = useState("");
   const [action, setAction] = useState("");
@@ -51,6 +67,35 @@ export default function AuditLogPage() {
       <div>
         <h1 className="text-lg font-semibold text-ink">Audit Log</h1>
         <p className="text-sm text-muted">Who changed what, and when.</p>
+      </div>
+
+      <div className="kpi-card space-y-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <button onClick={runVerify} disabled={verifying} className="text-sm px-3 py-1.5 rounded-sm bg-ink text-white hover:opacity-90 disabled:opacity-50">
+            {verifying ? "Checking…" : "Verify log integrity"}
+          </button>
+          <span className="text-xs text-muted">Re-checks every entry&apos;s signature to detect edits or deletions made outside the app.</span>
+        </div>
+        {verifyError && <div className="text-sm text-bad">{verifyError}</div>}
+        {verify && (
+          <div className="text-sm space-y-1">
+            <div className={verify.tampered ? "text-bad font-medium" : "text-good font-medium"}>
+              {verify.tampered
+                ? `${verify.tampered} entr${verify.tampered === 1 ? "y fails" : "ies fail"} verification.`
+                : "No tampering detected."}
+            </div>
+            <div className="text-xs text-muted">
+              {verify.total} entries checked: {verify.intact} intact, {verify.tampered} altered, {verify.unsigned_legacy} older entries from before signing (cannot be verified).
+            </div>
+            {verify.mismatches.length > 0 && (
+              <ul className="text-xs list-disc list-inside text-bad">
+                {verify.mismatches.map((m) => (
+                  <li key={m.id}>{fmtDateTime(m.created_at)} — {m.action} {m.entity_type || ""}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
       <form onSubmit={applyFilters} className="flex flex-wrap items-end gap-3">

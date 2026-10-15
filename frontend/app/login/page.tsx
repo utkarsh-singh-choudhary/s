@@ -17,7 +17,10 @@ export default function LoginPage() {
     setError(null);
     try {
       await login(email, password);
-      router.push("/dashboard");
+      // Come back to where the person was headed (e.g. a scanned machine QR).
+      // Only same-site relative paths are honoured.
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.push(next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard");
       router.refresh();
     } catch (err: any) {
       setError(err.message || "Login failed");
